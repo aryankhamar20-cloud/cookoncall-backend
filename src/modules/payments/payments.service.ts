@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
-import * as Razorpay from 'razorpay';
+const Razorpay = require('razorpay');
 import { Payment, PaymentStatus } from './payment.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { CreateOrderDto, VerifyPaymentDto } from './dto/payment.dto';
@@ -25,7 +25,7 @@ export class PaymentsService {
     private bookingsRepository: Repository<Booking>,
     private configService: ConfigService,
   ) {
-    this.razorpay = new (Razorpay as any)({
+    this.razorpay = new Razorpay({
       key_id: this.configService.get<string>('RAZORPAY_KEY_ID'),
       key_secret: this.configService.get<string>('RAZORPAY_KEY_SECRET'),
     });
