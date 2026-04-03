@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
-const Razorpay = require('razorpay');
+import Razorpay from 'razorpay';
 import { Payment, PaymentStatus } from './payment.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { CreateOrderDto, VerifyPaymentDto } from './dto/payment.dto';
