@@ -6,13 +6,10 @@ export const databaseConfig = (configService: ConfigService): TypeOrmModuleOptio
   url: configService.get<string>('DATABASE_URL'),
   autoLoadEntities: true,
   synchronize: configService.get<string>('NODE_ENV') !== 'production',
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  ssl: { rejectUnauthorized: false },
   extra: {
-    ssl: {
-      rejectUnauthorized: false,
-    },
+    ssl: { rejectUnauthorized: false },
+    family: 4,
   },
-  logging: configService.get<string>('NODE_ENV') === 'development',
+  logging: false,
 });
