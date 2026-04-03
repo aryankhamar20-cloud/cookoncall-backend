@@ -25,7 +25,7 @@ export class PaymentsService {
     private bookingsRepository: Repository<Booking>,
     private configService: ConfigService,
   ) {
-    this.razorpay = new Razorpay({
+    this.razorpay = new (Razorpay as any)({
       key_id: this.configService.get<string>('RAZORPAY_KEY_ID'),
       key_secret: this.configService.get<string>('RAZORPAY_KEY_SECRET'),
     });
