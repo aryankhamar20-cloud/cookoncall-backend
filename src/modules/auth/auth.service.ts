@@ -11,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { User, UserRole } from '../users/user.entity';
+import { Cook } from '../cooks/cook.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import {
@@ -29,6 +30,8 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private usersRepository: Repository<User>,
+    @InjectRepository(Cook)
+    private cooksRepository: Repository<Cook>,
     private jwtService: JwtService,
     private configService: ConfigService,
   ) {}
@@ -54,6 +57,19 @@ export class AuthService {
     });
 
     await this.usersRepository.save(user);
+
+    // If registering as a cook, create their cook profile
+    if (user.role === UserRole.COOK) {
+      const cookProfile = this.cooksRepository.create({
+        user_id: user.id,
+        cuisines: dto.specialties
+          ? dto.specialties.split(',').map((s) => s.trim())
+          : [],
+        price_per_session: dto.rate || 200,
+        bio: dto.experience || null,
+      });
+      await this.cooksRepository.save(cookProfile);
+    }
 
     const tokens = await this.generateTokens(user);
     await this.updateRefreshToken(user.id, tokens.refresh_token);

@@ -2,6 +2,7 @@ import {
   IsEmail,
   IsEnum,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
@@ -28,4 +29,17 @@ export class RegisterDto {
   @IsEnum(UserRole, { message: 'Role must be user or cook' })
   @IsOptional()
   role?: UserRole;
+
+  // ─── Chef-only fields (optional, used when role = cook) ───
+  @IsOptional()
+  @IsString()
+  specialties?: string;
+
+  @IsOptional()
+  @IsString()
+  experience?: string;
+
+  @IsOptional()
+  @IsNumber()
+  rate?: number;
 }
