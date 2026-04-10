@@ -48,12 +48,20 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 12);
 
+    // SECURITY: public registration can ONLY create `user` or `cook` accounts.
+    // Admin accounts are seeded on server startup in src/seed-admins.ts — they
+    // can never be created through this endpoint, no matter what role the
+    // client sends. This closes the "register as admin" privilege escalation.
+    const requestedRole = dto.role || UserRole.USER;
+    const safeRole =
+      requestedRole === UserRole.COOK ? UserRole.COOK : UserRole.USER;
+
     const user = this.usersRepository.create({
       name: dto.name,
       email: dto.email.toLowerCase(),
       phone: dto.phone || null,
       password: hashedPassword,
-      role: dto.role || UserRole.USER,
+      role: safeRole,
     });
 
     await this.usersRepository.save(user);
