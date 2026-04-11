@@ -24,7 +24,8 @@ export class PaymentsController {
     @CurrentUser() user: User,
     @Body() dto: CreateOrderDto,
   ) {
-    return this.paymentsService.createOrder(user.id, dto);
+    const result = await this.paymentsService.createOrder(user.id, dto);
+    return { success: true, data: result };
   }
 
   @Post('verify')
@@ -33,7 +34,8 @@ export class PaymentsController {
     @CurrentUser() user: User,
     @Body() dto: VerifyPaymentDto,
   ) {
-    return this.paymentsService.verifyPayment(user.id, dto);
+    const result = await this.paymentsService.verifyPayment(user.id, dto);
+    return { success: true, data: result };
   }
 
   @Get('booking/:bookingId')

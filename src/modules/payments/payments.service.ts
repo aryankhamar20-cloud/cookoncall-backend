@@ -57,15 +57,28 @@ export class PaymentsService {
     // Create Razorpay order
     const amountInPaise = Math.round(Number(booking.total_price) * 100);
 
-    const razorpayOrder = await this.razorpay.orders.create({
-      amount: amountInPaise,
-      currency: 'INR',
-      receipt: `booking_${booking.id}`,
-      notes: {
-        booking_id: booking.id,
-        user_id: userId,
-      },
-    });
+    let razorpayOrder;
+    try {
+      razorpayOrder = await this.razorpay.orders.create({
+        amount: amountInPaise,
+        currency: 'INR',
+        receipt: `booking_${booking.id}`,
+        notes: {
+          booking_id: booking.id,
+          user_id: userId,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Razorpay order creation failed: ${error?.message || JSON.stringify(error)}`,
+      );
+      this.logger.error(
+        `Razorpay error details: statusCode=${error?.statusCode}, error=${JSON.stringify(error?.error)}`,
+      );
+      throw new BadRequestException(
+        `Payment gateway error: ${error?.error?.description || error?.message || 'Unknown error'}`,
+      );
+    }
 
     // Create or update payment record
     let payment: Payment;
