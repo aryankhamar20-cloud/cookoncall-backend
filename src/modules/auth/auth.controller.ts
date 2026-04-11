@@ -16,6 +16,8 @@ import {
   ResetPasswordDto,
   SendOtpDto,
   VerifyOtpDto,
+  SendEmailOtpDto,
+  VerifyEmailOtpDto,
 } from './dto/otp.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -57,6 +59,21 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto);
+  }
+
+  // ─── EMAIL OTP (verification after signup) ────────────
+  @Public()
+  @Post('send-email-otp')
+  @HttpCode(HttpStatus.OK)
+  async sendEmailOtp(@Body() dto: SendEmailOtpDto) {
+    return this.authService.sendEmailOtp(dto);
+  }
+
+  @Public()
+  @Post('verify-email-otp')
+  @HttpCode(HttpStatus.OK)
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto) {
+    return this.authService.verifyEmailOtp(dto);
   }
 
   @Public()

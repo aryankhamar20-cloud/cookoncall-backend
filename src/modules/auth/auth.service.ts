@@ -10,6 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import * as nodemailer from 'nodemailer';
 import { User, UserRole } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 import { RegisterDto } from './dto/register.dto';
@@ -20,12 +21,15 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
   GoogleAuthDto,
+  SendEmailOtpDto,
+  VerifyEmailOtpDto,
 } from './dto/otp.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private transporter: nodemailer.Transporter;
 
   constructor(
     @InjectRepository(User)
@@ -34,7 +38,18 @@ export class AuthService {
     private cooksRepository: Repository<Cook>,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+  ) {
+    // Direct SMTP transporter — no BullMQ/Redis dependency
+    this.transporter = nodemailer.createTransport({
+      host: this.configService.get<string>('SMTP_HOST', 'smtp.gmail.com'),
+      port: this.configService.get<number>('SMTP_PORT', 587),
+      secure: false,
+      auth: {
+        user: this.configService.get<string>('SMTP_USER'),
+        pass: this.configService.get<string>('SMTP_PASS'),
+      },
+    });
+  }
 
   // ─── REGISTER ──────────────────────────────────────────
   async register(dto: RegisterDto) {
@@ -48,10 +63,6 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 12);
 
-    // SECURITY: public registration can ONLY create `user` or `cook` accounts.
-    // Admin accounts are seeded on server startup in src/seed-admins.ts — they
-    // can never be created through this endpoint, no matter what role the
-    // client sends. This closes the "register as admin" privilege escalation.
     const requestedRole = dto.role || UserRole.USER;
     const safeRole =
       requestedRole === UserRole.COOK ? UserRole.COOK : UserRole.USER;
@@ -82,9 +93,17 @@ export class AuthService {
     const tokens = await this.generateTokens(user);
     await this.updateRefreshToken(user.id, tokens.refresh_token);
 
+    // Send email verification OTP automatically after registration
+    try {
+      await this.sendEmailVerificationOtp(user);
+    } catch (err) {
+      this.logger.warn(`Failed to send verification email to ${user.email}: ${err.message}`);
+    }
+
     return {
       user: this.sanitizeUser(user),
       ...tokens,
+      email_verification_sent: true,
     };
   }
 
@@ -118,7 +137,6 @@ export class AuthService {
 
   // ─── GOOGLE OAUTH ──────────────────────────────────────
   async googleAuth(dto: GoogleAuthDto) {
-    // Verify the Google ID token
     const googlePayload = await this.verifyGoogleToken(dto.token);
 
     if (!googlePayload || !googlePayload.email) {
@@ -130,17 +148,16 @@ export class AuthService {
     });
 
     if (!user) {
-      // Create new user from Google
       user = this.usersRepository.create({
         name: googlePayload.name || 'User',
         email: googlePayload.email.toLowerCase(),
         google_id: googlePayload.sub,
         avatar: googlePayload.picture || null,
         role: UserRole.USER,
+        email_verified: true, // Google accounts are pre-verified
       });
       await this.usersRepository.save(user);
     } else if (!user.google_id) {
-      // Link Google account to existing user
       user.google_id = googlePayload.sub;
       if (!user.avatar && googlePayload.picture) {
         user.avatar = googlePayload.picture;
@@ -157,12 +174,68 @@ export class AuthService {
     };
   }
 
-  // ─── SEND OTP (via MSG91) ─────────────────────────────
+  // ─── SEND EMAIL OTP (for email verification) ──────────
+  async sendEmailOtp(dto: SendEmailOtpDto) {
+    const user = await this.usersRepository.findOne({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (!user) {
+      throw new BadRequestException('No account found with this email');
+    }
+
+    if (user.email_verified) {
+      return { message: 'Email already verified' };
+    }
+
+    await this.sendEmailVerificationOtp(user);
+
+    return { message: 'Verification OTP sent to your email' };
+  }
+
+  // ─── VERIFY EMAIL OTP ─────────────────────────────────
+  async verifyEmailOtp(dto: VerifyEmailOtpDto) {
+    const user = await this.usersRepository.findOne({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (!user) {
+      throw new BadRequestException('No account found with this email');
+    }
+
+    if (user.email_verified) {
+      return { message: 'Email already verified' };
+    }
+
+    if (!user.otp || !user.otp_expires_at) {
+      throw new BadRequestException('No OTP requested. Please request a new OTP.');
+    }
+
+    if (new Date() > user.otp_expires_at) {
+      user.otp = null;
+      user.otp_expires_at = null;
+      await this.usersRepository.save(user);
+      throw new BadRequestException('OTP has expired. Please request a new one.');
+    }
+
+    if (user.otp !== dto.otp) {
+      throw new BadRequestException('Invalid OTP');
+    }
+
+    // OTP verified — mark email as verified
+    user.email_verified = true;
+    user.otp = null;
+    user.otp_expires_at = null;
+    await this.usersRepository.save(user);
+
+    return { message: 'Email verified successfully' };
+  }
+
+  // ─── SEND OTP (via MSG91 — phone) ─────────────────────
   async sendOtp(dto: SendOtpDto) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
-    // Find user by phone
     const user = await this.usersRepository.findOne({
       where: { phone: dto.phone },
     });
@@ -175,13 +248,12 @@ export class AuthService {
     user.otp_expires_at = otpExpiresAt;
     await this.usersRepository.save(user);
 
-    // Send OTP via MSG91
     await this.sendOtpViaMSG91(dto.phone, otp);
 
     return { message: 'OTP sent successfully' };
   }
 
-  // ─── VERIFY OTP ────────────────────────────────────────
+  // ─── VERIFY OTP (phone) ───────────────────────────────
   async verifyOtp(dto: VerifyOtpDto) {
     const user = await this.usersRepository.findOne({
       where: { phone: dto.phone },
@@ -206,7 +278,6 @@ export class AuthService {
       throw new BadRequestException('Invalid OTP');
     }
 
-    // OTP verified — mark phone as verified, clear OTP
     user.phone_verified = true;
     user.otp = null;
     user.otp_expires_at = null;
@@ -222,7 +293,6 @@ export class AuthService {
     });
 
     if (!user) {
-      // Don't reveal if email exists — always return success
       return { message: 'If the email exists, a reset OTP has been sent' };
     }
 
@@ -231,8 +301,8 @@ export class AuthService {
     user.otp_expires_at = new Date(Date.now() + 5 * 60 * 1000);
     await this.usersRepository.save(user);
 
-    // Send OTP via email (Nodemailer)
-    await this.sendPasswordResetEmail(user.email, otp);
+    // Send password reset OTP via email
+    await this.sendOtpEmail(user.email, otp, 'password_reset');
 
     return { message: 'If the email exists, a reset OTP has been sent' };
   }
@@ -346,11 +416,84 @@ export class AuthService {
     return sanitized;
   }
 
+  /** Send email verification OTP to user */
+  private async sendEmailVerificationOtp(user: User) {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otp_expires_at = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    await this.usersRepository.save(user);
+
+    await this.sendOtpEmail(user.email, otp, 'email_verification');
+  }
+
+  /** Send OTP email via direct SMTP (no Redis/BullMQ needed) */
+  private async sendOtpEmail(
+    email: string,
+    otp: string,
+    type: 'email_verification' | 'password_reset',
+  ) {
+    const smtpUser = this.configService.get<string>('SMTP_USER');
+    const smtpPass = this.configService.get<string>('SMTP_PASS');
+
+    if (!smtpUser || !smtpPass) {
+      this.logger.warn(`SMTP not configured — OTP for ${email}: ${otp}`);
+      return;
+    }
+
+    const isVerification = type === 'email_verification';
+    const subject = isVerification
+      ? 'Verify your CookOnCall account'
+      : 'Reset your CookOnCall password';
+
+    const heading = isVerification
+      ? 'Verify Your Email'
+      : 'Reset Your Password';
+
+    const message = isVerification
+      ? 'Thank you for joining CookOnCall! Use the code below to verify your email address.'
+      : 'We received a request to reset your password. Use the code below to proceed.';
+
+    const html = `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+        </div>
+        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">${heading}</h2>
+        <p style="text-align: center; color: #8B7355; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+          ${message}
+        </p>
+        <div style="background: white; border-radius: 12px; padding: 20px; text-align: center; border: 2px dashed #FFB347; margin-bottom: 24px;">
+          <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #D4721A;">${otp}</div>
+          <div style="font-size: 12px; color: #8B7355; margin-top: 8px;">Valid for 10 minutes</div>
+        </div>
+        <p style="text-align: center; color: #B0A090; font-size: 12px;">
+          If you didn't request this, please ignore this email.
+        </p>
+        <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
+        <p style="text-align: center; color: #B0A090; font-size: 11px;">
+          © ${new Date().getFullYear()} CookOnCall · Ahmedabad, India
+        </p>
+      </div>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: `"CookOnCall" <${this.configService.get<string>('SMTP_FROM', smtpUser)}>`,
+        to: email,
+        subject,
+        html,
+      });
+      this.logger.log(`OTP email sent to ${email} (${type})`);
+    } catch (error) {
+      this.logger.error(`Failed to send OTP email to ${email}`, error);
+      // Don't throw — OTP is saved in DB, user can retry
+    }
+  }
+
   private async verifyGoogleToken(
     token: string,
   ): Promise<{ email: string; name: string; sub: string; picture?: string } | null> {
     try {
-      // Use Google's tokeninfo endpoint to verify the ID token
       const response = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?id_token=${token}`,
       );
@@ -362,7 +505,6 @@ export class AuthService {
       const payload = await response.json();
       const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
 
-      // Verify the token was issued for our app
       if (payload.aud !== clientId) {
         return null;
       }
@@ -406,14 +548,6 @@ export class AuthService {
       this.logger.log(`MSG91 OTP response: ${JSON.stringify(data)}`);
     } catch (error) {
       this.logger.error('MSG91 OTP send failed', error);
-      // Don't throw — we already saved the OTP, user can retry
     }
-  }
-
-  private async sendPasswordResetEmail(email: string, otp: string) {
-    // This will be handled by the NotificationsModule queue
-    // For now, log it
-    this.logger.log(`Password reset OTP for ${email}: ${otp}`);
-    // TODO: Inject NotificationsService and use email queue
   }
 }

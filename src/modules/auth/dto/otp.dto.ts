@@ -14,6 +14,21 @@ export class VerifyOtpDto {
   otp: string;
 }
 
+// ─── Email OTP (for email verification after signup) ────
+export class SendEmailOtpDto {
+  @IsEmail()
+  email: string;
+}
+
+export class VerifyEmailOtpDto {
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  @Length(6, 6, { message: 'OTP must be exactly 6 digits' })
+  otp: string;
+}
+
 export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty()

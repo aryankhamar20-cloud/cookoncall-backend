@@ -32,6 +32,9 @@ export class User {
   @Column({ default: false })
   phone_verified: boolean;
 
+  @Column({ default: false })
+  email_verified: boolean;
+
   @Exclude()
   @Column({ nullable: true })
   password: string;
