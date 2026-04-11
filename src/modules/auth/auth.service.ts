@@ -48,6 +48,11 @@ export class AuthService {
         user: this.configService.get<string>('SMTP_USER'),
         pass: this.configService.get<string>('SMTP_PASS'),
       },
+      connectionTimeout: 10000, // 10s to establish connection
+      greetingTimeout: 10000,   // 10s for SMTP greeting
+      socketTimeout: 15000,     // 15s for socket inactivity
+      pool: true,               // reuse connections
+      maxConnections: 3,
     });
   }
 
@@ -93,12 +98,10 @@ export class AuthService {
     const tokens = await this.generateTokens(user);
     await this.updateRefreshToken(user.id, tokens.refresh_token);
 
-    // Send email verification OTP automatically after registration
-    try {
-      await this.sendEmailVerificationOtp(user);
-    } catch (err) {
+    // Send email verification OTP in background — don't block registration response
+    this.sendEmailVerificationOtp(user).catch((err) => {
       this.logger.warn(`Failed to send verification email to ${user.email}: ${err.message}`);
-    }
+    });
 
     return {
       user: this.sanitizeUser(user),
@@ -301,8 +304,10 @@ export class AuthService {
     user.otp_expires_at = new Date(Date.now() + 5 * 60 * 1000);
     await this.usersRepository.save(user);
 
-    // Send password reset OTP via email
-    await this.sendOtpEmail(user.email, otp, 'password_reset');
+    // Send password reset OTP via email — don't block response
+    this.sendOtpEmail(user.email, otp, 'password_reset').catch((err) => {
+      this.logger.error(`Failed to send reset email to ${user.email}: ${err.message}`);
+    });
 
     return { message: 'If the email exists, a reset OTP has been sent' };
   }
