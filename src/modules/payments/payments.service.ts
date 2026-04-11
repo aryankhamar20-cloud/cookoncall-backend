@@ -62,7 +62,7 @@ export class PaymentsService {
       razorpayOrder = await this.razorpay.orders.create({
         amount: amountInPaise,
         currency: 'INR',
-        receipt: `booking_${booking.id}`,
+        receipt: `bk_${booking.id.replace(/-/g, '').slice(0, 36)}`,
         notes: {
           booking_id: booking.id,
           user_id: userId,
