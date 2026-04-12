@@ -10,7 +10,6 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import * as nodemailer from 'nodemailer';
 import { User, UserRole } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 import { RegisterDto } from './dto/register.dto';
@@ -29,7 +28,7 @@ import { JwtPayload } from './strategies/jwt.strategy';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private transporter: nodemailer.Transporter;
+  private resendApiKey: string;
 
   constructor(
     @InjectRepository(User)
@@ -39,21 +38,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
   ) {
-    // Direct SMTP transporter — no BullMQ/Redis dependency
-    this.transporter = nodemailer.createTransport({
-      host: this.configService.get<string>('SMTP_HOST', 'smtp.gmail.com'),
-      port: this.configService.get<number>('SMTP_PORT', 587),
-      secure: false,
-      auth: {
-        user: this.configService.get<string>('SMTP_USER'),
-        pass: this.configService.get<string>('SMTP_PASS'),
-      },
-      connectionTimeout: 10000, // 10s to establish connection
-      greetingTimeout: 10000,   // 10s for SMTP greeting
-      socketTimeout: 15000,     // 15s for socket inactivity
-      pool: true,               // reuse connections
-      maxConnections: 3,
-    });
+    this.resendApiKey = this.configService.get<string>('RESEND_API_KEY', '');
   }
 
   // ─── REGISTER ──────────────────────────────────────────
@@ -431,17 +416,14 @@ export class AuthService {
     await this.sendOtpEmail(user.email, otp, 'email_verification');
   }
 
-  /** Send OTP email via direct SMTP (no Redis/BullMQ needed) */
+  /** Send OTP email via Resend HTTP API (no SMTP needed — works on Railway) */
   private async sendOtpEmail(
     email: string,
     otp: string,
     type: 'email_verification' | 'password_reset',
   ) {
-    const smtpUser = this.configService.get<string>('SMTP_USER');
-    const smtpPass = this.configService.get<string>('SMTP_PASS');
-
-    if (!smtpUser || !smtpPass) {
-      this.logger.warn(`SMTP not configured — OTP for ${email}: ${otp}`);
+    if (!this.resendApiKey) {
+      this.logger.warn(`RESEND_API_KEY not configured — OTP for ${email}: ${otp}`);
       return;
     }
 
@@ -476,22 +458,35 @@ export class AuthService {
         </p>
         <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
         <p style="text-align: center; color: #B0A090; font-size: 11px;">
-          © ${new Date().getFullYear()} CookOnCall · Ahmedabad, India
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, India
         </p>
       </div>
     `;
 
     try {
-      await this.transporter.sendMail({
-        from: `"CookOnCall" <${this.configService.get<string>('SMTP_FROM', smtpUser)}>`,
-        to: email,
-        subject,
-        html,
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.resendApiKey}`,
+        },
+        body: JSON.stringify({
+          from: 'CookOnCall <onboarding@resend.dev>',
+          to: [email],
+          subject,
+          html,
+        }),
       });
-      this.logger.log(`OTP email sent to ${email} (${type})`);
+
+      const result = await response.json();
+
+      if (response.ok) {
+        this.logger.log(`OTP email sent to ${email} (${type}) — Resend ID: ${result.id}`);
+      } else {
+        this.logger.error(`Resend API error for ${email}: ${JSON.stringify(result)}`);
+      }
     } catch (error) {
       this.logger.error(`Failed to send OTP email to ${email}`, error);
-      // Don't throw — OTP is saved in DB, user can retry
     }
   }
 
