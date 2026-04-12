@@ -28,7 +28,7 @@ import { JwtPayload } from './strategies/jwt.strategy';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private resendApiKey: string;
+  private brevoApiKey: string;
 
   constructor(
     @InjectRepository(User)
@@ -38,7 +38,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
   ) {
-    this.resendApiKey = this.configService.get<string>('RESEND_API_KEY', '');
+    this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
 
   // ─── REGISTER ──────────────────────────────────────────
@@ -416,14 +416,14 @@ export class AuthService {
     await this.sendOtpEmail(user.email, otp, 'email_verification');
   }
 
-  /** Send OTP email via Resend HTTP API (no SMTP needed — works on Railway) */
+  /** Send OTP email via Brevo HTTP API (300 emails/day free, any recipient) */
   private async sendOtpEmail(
     email: string,
     otp: string,
     type: 'email_verification' | 'password_reset',
   ) {
-    if (!this.resendApiKey) {
-      this.logger.warn(`RESEND_API_KEY not configured — OTP for ${email}: ${otp}`);
+    if (!this.brevoApiKey) {
+      this.logger.warn(`BREVO_API_KEY not configured — OTP for ${email}: ${otp}`);
       return;
     }
 
@@ -464,26 +464,26 @@ export class AuthService {
     `;
 
     try {
-      const response = await fetch('https://api.resend.com/emails', {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.resendApiKey}`,
+          'api-key': this.brevoApiKey,
         },
         body: JSON.stringify({
-          from: 'CookOnCall <onboarding@resend.dev>',
-          to: [email],
+          sender: { name: 'CookOnCall', email: 'aryankhamar20@gmail.com' },
+          to: [{ email }],
           subject,
-          html,
+          htmlContent: html,
         }),
       });
 
       const result = await response.json();
 
       if (response.ok) {
-        this.logger.log(`OTP email sent to ${email} (${type}) — Resend ID: ${result.id}`);
+        this.logger.log(`OTP email sent to ${email} (${type}) — Brevo messageId: ${result.messageId}`);
       } else {
-        this.logger.error(`Resend API error for ${email}: ${JSON.stringify(result)}`);
+        this.logger.error(`Brevo API error for ${email}: ${JSON.stringify(result)}`);
       }
     } catch (error) {
       this.logger.error(`Failed to send OTP email to ${email}`, error);
