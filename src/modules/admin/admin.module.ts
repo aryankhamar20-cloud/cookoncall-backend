@@ -6,9 +6,13 @@ import { User } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 import { Booking } from '../bookings/booking.entity';
 import { Payment } from '../payments/payment.entity';
+import { Review } from '../reviews/review.entity';
+import { Notification } from '../notifications/notification.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Cook, Booking, Payment])],
+  imports: [
+    TypeOrmModule.forFeature([User, Cook, Booking, Payment, Review, Notification]),
+  ],
   controllers: [AdminController],
   providers: [AdminService],
 })

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -20,11 +21,23 @@ import { BookingStatus } from '../bookings/booking.entity';
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
+  // ─── DASHBOARD ───────────────────────────────────────
   @Get('stats')
   async getStats() {
     return this.adminService.getStats();
   }
 
+  @Get('recent-users')
+  async getRecentUsers() {
+    return this.adminService.getRecentUsers();
+  }
+
+  @Get('recent-bookings')
+  async getRecentBookings() {
+    return this.adminService.getRecentBookings();
+  }
+
+  // ─── USERS ───────────────────────────────────────────
   @Get('users')
   async getUsers(
     @Query('search') search?: string,
@@ -34,6 +47,25 @@ export class AdminController {
     return this.adminService.getUsers(search, page || 1, limit || 20);
   }
 
+  @Patch('users/:id/toggle-active')
+  async toggleUserActive(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.toggleUserActive(id);
+  }
+
+  @Patch('users/:id')
+  async updateUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { name?: string; email?: string; phone?: string; role?: string },
+  ) {
+    return this.adminService.updateUser(id, body);
+  }
+
+  @Delete('users/:id')
+  async deleteUser(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.deleteUser(id);
+  }
+
+  // ─── COOKS ───────────────────────────────────────────
   @Get('cooks')
   async getCooks(
     @Query('verified') verified?: string,
@@ -53,11 +85,12 @@ export class AdminController {
     return this.adminService.verifyCook(id, verified);
   }
 
-  @Patch('users/:id/toggle-active')
-  async toggleUserActive(@Param('id', ParseUUIDPipe) id: string) {
-    return this.adminService.toggleUserActive(id);
+  @Delete('cooks/:id')
+  async deleteCook(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.deleteCook(id);
   }
 
+  // ─── BOOKINGS ────────────────────────────────────────
   @Get('bookings')
   async getBookings(
     @Query('status') status?: BookingStatus,
@@ -81,13 +114,8 @@ export class AdminController {
     return this.adminService.updateBookingStatus(id, status);
   }
 
-  @Get('recent-users')
-  async getRecentUsers() {
-    return this.adminService.getRecentUsers();
-  }
-
-  @Get('recent-bookings')
-  async getRecentBookings() {
-    return this.adminService.getRecentBookings();
+  @Delete('bookings/:id')
+  async deleteBooking(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.deleteBooking(id);
   }
 }

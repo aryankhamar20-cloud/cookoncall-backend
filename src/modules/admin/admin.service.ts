@@ -9,6 +9,8 @@ import { User, UserRole } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
+import { Review } from '../reviews/review.entity';
+import { Notification } from '../notifications/notification.entity';
 
 @Injectable()
 export class AdminService {
@@ -21,6 +23,10 @@ export class AdminService {
     private bookingsRepository: Repository<Booking>,
     @InjectRepository(Payment)
     private paymentsRepository: Repository<Payment>,
+    @InjectRepository(Review)
+    private reviewsRepository: Repository<Review>,
+    @InjectRepository(Notification)
+    private notificationsRepository: Repository<Notification>,
   ) {}
 
   // ─── DASHBOARD STATS ──────────────────────────────────
@@ -89,6 +95,104 @@ export class AdminService {
     };
   }
 
+  // ─── UPDATE USER (admin edit) ─────────────────────────
+  async updateUser(
+    userId: string,
+    updates: { name?: string; email?: string; phone?: string; role?: string },
+  ) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.role === UserRole.ADMIN && updates.role && updates.role !== 'admin') {
+      throw new BadRequestException('Cannot change admin role');
+    }
+
+    if (updates.name !== undefined) user.name = updates.name;
+    if (updates.email !== undefined) user.email = updates.email;
+    if (updates.phone !== undefined) user.phone = updates.phone;
+    if (updates.role !== undefined) {
+      const safeRole = updates.role as UserRole;
+      if (!Object.values(UserRole).includes(safeRole)) {
+        throw new BadRequestException('Invalid role');
+      }
+      user.role = safeRole;
+    }
+
+    await this.usersRepository.save(user);
+    return { message: 'User updated', user };
+  }
+
+  // ─── DELETE USER (cascade) ────────────────────────────
+  async deleteUser(userId: string) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.role === UserRole.ADMIN) {
+      throw new BadRequestException('Cannot delete an admin account');
+    }
+
+    // 1. Delete notifications for this user
+    await this.notificationsRepository.delete({ user_id: userId });
+
+    // 2. Delete reviews by this user
+    await this.reviewsRepository.delete({ user_id: userId });
+
+    // 3. Find all bookings by this user
+    const userBookings = await this.bookingsRepository.find({
+      where: { user_id: userId },
+    });
+
+    for (const booking of userBookings) {
+      // Delete payment for this booking
+      await this.paymentsRepository.delete({ booking_id: booking.id });
+      // Delete review for this booking (if reviewer was the cook or someone else)
+      await this.reviewsRepository.delete({ booking_id: booking.id });
+    }
+
+    // 4. Delete all bookings by this user
+    await this.bookingsRepository.delete({ user_id: userId });
+
+    // 5. If user is a cook, delete cook-related data
+    const cook = await this.cooksRepository.findOne({
+      where: { user_id: userId },
+    });
+
+    if (cook) {
+      // Delete reviews where this cook was reviewed
+      await this.reviewsRepository.delete({ cook_id: cook.id });
+
+      // Delete bookings where this cook was booked
+      const cookBookings = await this.bookingsRepository.find({
+        where: { cook_id: cook.id },
+      });
+
+      for (const booking of cookBookings) {
+        await this.paymentsRepository.delete({ booking_id: booking.id });
+        await this.reviewsRepository.delete({ booking_id: booking.id });
+      }
+
+      await this.bookingsRepository.delete({ cook_id: cook.id });
+
+      // Delete the cook profile
+      await this.cooksRepository.delete({ id: cook.id });
+    }
+
+    // 6. Finally delete the user
+    await this.usersRepository.delete({ id: userId });
+
+    return { message: `User "${user.name}" and all related data deleted` };
+  }
+
   // ─── GET ALL COOKS ────────────────────────────────────
   async getCooks(verified?: boolean, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
@@ -128,7 +232,45 @@ export class AdminService {
     return { message: verified ? 'Cook verified' : 'Cook rejected', cook };
   }
 
-  // ─── BLOCK / UNBLOCK USER ─────────────────────────────
+  // ─── DELETE COOK (cascade) ────────────────────────────
+  async deleteCook(cookId: string) {
+    const cook = await this.cooksRepository.findOne({
+      where: { id: cookId },
+      relations: ['user'],
+    });
+
+    if (!cook) {
+      throw new NotFoundException('Cook not found');
+    }
+
+    // Delete reviews for this cook
+    await this.reviewsRepository.delete({ cook_id: cookId });
+
+    // Find and delete bookings + payments for this cook
+    const cookBookings = await this.bookingsRepository.find({
+      where: { cook_id: cookId },
+    });
+
+    for (const booking of cookBookings) {
+      await this.paymentsRepository.delete({ booking_id: booking.id });
+      await this.reviewsRepository.delete({ booking_id: booking.id });
+    }
+
+    await this.bookingsRepository.delete({ cook_id: cookId });
+
+    // Delete the cook profile (but keep the user account)
+    await this.cooksRepository.delete({ id: cookId });
+
+    // Revert user role back to 'user'
+    if (cook.user) {
+      cook.user.role = UserRole.USER;
+      await this.usersRepository.save(cook.user);
+    }
+
+    return { message: `Cook profile deleted, user "${cook.user?.name}" reverted to regular user` };
+  }
+
+  // ─── BLOCK / UNBLOCK USER ────────────────────────────
   async toggleUserActive(userId: string) {
     const user = await this.usersRepository.findOne({
       where: { id: userId },
@@ -151,8 +293,13 @@ export class AdminService {
     };
   }
 
-  // ─── GET ALL BOOKINGS ─────────────────────────────────
-  async getBookings(status?: BookingStatus, search?: string, page = 1, limit = 20) {
+  // ─── GET ALL BOOKINGS ────────────────────────────────
+  async getBookings(
+    status?: BookingStatus,
+    search?: string,
+    page = 1,
+    limit = 20,
+  ) {
     const skip = (page - 1) * limit;
 
     const qb = this.bookingsRepository
@@ -178,11 +325,16 @@ export class AdminService {
 
     return {
       bookings,
-      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: Math.ceil(total / limit),
+      },
     };
   }
 
-  // ─── UPDATE BOOKING STATUS (admin override) ───────────
+  // ─── UPDATE BOOKING STATUS ────────────────────────────
   async updateBookingStatus(bookingId: string, status: BookingStatus) {
     const booking = await this.bookingsRepository.findOne({
       where: { id: bookingId },
@@ -207,7 +359,30 @@ export class AdminService {
     return booking;
   }
 
-  // ─── GET RECENT USERS ─────────────────────────────────
+  // ─── DELETE BOOKING (cascade) ─────────────────────────
+  async deleteBooking(bookingId: string) {
+    const booking = await this.bookingsRepository.findOne({
+      where: { id: bookingId },
+      relations: ['user'],
+    });
+
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    // Delete payment for this booking
+    await this.paymentsRepository.delete({ booking_id: bookingId });
+
+    // Delete review for this booking
+    await this.reviewsRepository.delete({ booking_id: bookingId });
+
+    // Delete the booking
+    await this.bookingsRepository.delete({ id: bookingId });
+
+    return { message: `Booking deleted` };
+  }
+
+  // ─── GET RECENT USERS ────────────────────────────────
   async getRecentUsers(limit = 5) {
     return this.usersRepository.find({
       order: { created_at: 'DESC' },
@@ -215,7 +390,7 @@ export class AdminService {
     });
   }
 
-  // ─── GET RECENT BOOKINGS ──────────────────────────────
+  // ─── GET RECENT BOOKINGS ─────────────────────────────
   async getRecentBookings(limit = 5) {
     return this.bookingsRepository.find({
       relations: ['user', 'cook', 'cook.user'],
