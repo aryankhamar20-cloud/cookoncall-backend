@@ -107,43 +107,156 @@ export class NotificationsService {
     );
   }
 
-  // ─── BOOKING NOTIFICATION HELPERS ─────────────────────
+  // ═══════════════════════════════════════════════════════
+  // BOOKING NOTIFICATION HELPERS
+  // ═══════════════════════════════════════════════════════
 
+  /** Booking created → notify the chef */
   async notifyBookingCreated(
     userId: string,
     cookUserId: string,
     bookingId: string,
+    customerName: string,
   ) {
+    // Notify the chef
     await this.create(
       cookUserId,
       NotificationType.BOOKING_CREATED,
       'New Booking Request',
-      'You have a new booking request. Please accept or decline within 10 minutes.',
+      `${customerName} has placed a new booking request. Please accept or decline.`,
+      { booking_id: bookingId },
+    );
+
+    // Notify the customer (confirmation that booking was placed)
+    await this.create(
+      userId,
+      NotificationType.BOOKING_CREATED,
+      'Booking Placed',
+      'Your booking request has been sent to the chef. You will be notified once they respond.',
       { booking_id: bookingId },
     );
   }
 
-  async notifyBookingConfirmed(userId: string, bookingId: string) {
+  /** Chef accepted → notify customer */
+  async notifyBookingConfirmed(userId: string, bookingId: string, chefName: string) {
     await this.create(
       userId,
       NotificationType.BOOKING_CONFIRMED,
       'Booking Confirmed',
-      'Your booking has been confirmed by the cook!',
+      `${chefName} has accepted your booking! Get ready for a great meal.`,
       { booking_id: bookingId },
     );
   }
 
+  /** Chef rejected → notify customer */
+  async notifyBookingDeclined(userId: string, bookingId: string, chefName: string) {
+    await this.create(
+      userId,
+      NotificationType.BOOKING_CANCELLED,
+      'Booking Declined',
+      `${chefName} was unable to accept your booking. Please try another chef.`,
+      { booking_id: bookingId },
+    );
+  }
+
+  /** Booking cancelled → notify the other party */
   async notifyBookingCancelled(
-    userId: string,
+    recipientUserId: string,
     bookingId: string,
     cancelledBy: string,
   ) {
     await this.create(
-      userId,
+      recipientUserId,
       NotificationType.BOOKING_CANCELLED,
       'Booking Cancelled',
-      `Your booking has been cancelled by the ${cancelledBy}.`,
+      `The booking has been cancelled by the ${cancelledBy}.`,
       { booking_id: bookingId },
+    );
+  }
+
+  /** Cooking started → notify customer */
+  async notifySessionStarted(userId: string, bookingId: string, chefName: string) {
+    await this.create(
+      userId,
+      NotificationType.BOOKING_STARTED,
+      'Cooking Started',
+      `${chefName} has started cooking! Session is now in progress.`,
+      { booking_id: bookingId },
+    );
+  }
+
+  /** Cooking completed → notify both */
+  async notifySessionCompleted(
+    userId: string,
+    cookUserId: string,
+    bookingId: string,
+    durationMinutes: number,
+  ) {
+    const hrs = Math.floor(durationMinutes / 60);
+    const mins = durationMinutes % 60;
+    const durationStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins} minutes`;
+
+    // Notify customer
+    await this.create(
+      userId,
+      NotificationType.BOOKING_COMPLETED,
+      'Cooking Session Complete',
+      `The cooking session is complete! Duration: ${durationStr}. Please leave a review for your chef.`,
+      { booking_id: bookingId, duration_minutes: durationMinutes },
+    );
+
+    // Notify chef
+    await this.create(
+      cookUserId,
+      NotificationType.BOOKING_COMPLETED,
+      'Session Complete',
+      `Session completed. Duration: ${durationStr}. Earnings will be added to your account.`,
+      { booking_id: bookingId, duration_minutes: durationMinutes },
+    );
+  }
+
+  /** Prompt customer to review after completion */
+  async notifyReviewPrompt(userId: string, bookingId: string, chefName: string) {
+    await this.create(
+      userId,
+      NotificationType.REVIEW_PROMPT,
+      'How was your experience?',
+      `Please rate your cooking session with ${chefName}. Your review helps other customers!`,
+      { booking_id: bookingId },
+    );
+  }
+
+  /** Review received → notify chef */
+  async notifyReviewReceived(cookUserId: string, rating: number, reviewerName: string) {
+    await this.create(
+      cookUserId,
+      NotificationType.REVIEW_RECEIVED,
+      'New Review',
+      `${reviewerName} gave you a ${rating}-star review.`,
+    );
+  }
+
+  /** Chef verified → notify chef */
+  async notifyCookVerified(cookUserId: string) {
+    await this.create(
+      cookUserId,
+      NotificationType.COOK_VERIFIED,
+      'Profile Verified!',
+      'Congratulations! Your profile has been verified. You can now go online and start receiving bookings.',
+    );
+  }
+
+  /** Chef rejected → notify chef */
+  async notifyCookRejected(cookUserId: string, reason?: string) {
+    const msg = reason
+      ? `Your verification was not approved. Reason: ${reason}. Please update your documents and resubmit.`
+      : 'Your verification was not approved. Please check your documents and resubmit.';
+
+    await this.create(
+      cookUserId,
+      NotificationType.COOK_REJECTED,
+      'Verification Not Approved',
+      msg,
     );
   }
 

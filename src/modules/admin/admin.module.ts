@@ -8,10 +8,12 @@ import { Booking } from '../bookings/booking.entity';
 import { Payment } from '../payments/payment.entity';
 import { Review } from '../reviews/review.entity';
 import { Notification } from '../notifications/notification.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Cook, Booking, Payment, Review, Notification]),
+    NotificationsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

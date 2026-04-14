@@ -10,6 +10,13 @@ import {
 } from 'typeorm';
 import { User } from '../users/user.entity';
 
+export enum VerificationStatus {
+  NOT_SUBMITTED = 'not_submitted',
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+}
+
 @Entity('cooks')
 export class Cook {
   @PrimaryGeneratedColumn('uuid')
@@ -61,12 +68,41 @@ export class Cook {
   @Column({ default: false })
   is_veg_only: boolean;
 
+  // ─── VERIFICATION DOCUMENTS ──────────────────────────
   @Column({ nullable: true })
   aadhaar_url: string;
 
   @Column({ nullable: true })
   pan_url: string;
 
+  @Column({ nullable: true })
+  address_proof_url: string;
+
+  @Column({ nullable: true })
+  fssai_url: string;
+
+  // ─── EMERGENCY CONTACT ───────────────────────────────
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  emergency_contact_name: string;
+
+  @Column({ type: 'varchar', length: 15, nullable: true })
+  emergency_contact_phone: string;
+
+  // ─── VERIFICATION STATUS ─────────────────────────────
+  @Column({
+    type: 'enum',
+    enum: VerificationStatus,
+    default: VerificationStatus.NOT_SUBMITTED,
+  })
+  verification_status: VerificationStatus;
+
+  @Column({ type: 'text', nullable: true })
+  verification_rejection_reason: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  verified_at: Date;
+
+  // ─── BANK DETAILS ────────────────────────────────────
   @Column({ nullable: true })
   bank_account_number: string;
 
@@ -81,6 +117,13 @@ export class Cook {
 
   @Column({ nullable: true })
   razorpay_fund_account_id: string;
+
+  // ─── TERMS ACCEPTANCE ────────────────────────────────
+  @Column({ default: false })
+  terms_accepted: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  terms_accepted_at: Date;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

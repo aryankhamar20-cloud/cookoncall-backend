@@ -6,11 +6,12 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike } from 'typeorm';
 import { User, UserRole } from '../users/user.entity';
-import { Cook } from '../cooks/cook.entity';
+import { Cook, VerificationStatus } from '../cooks/cook.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 import { Review } from '../reviews/review.entity';
 import { Notification } from '../notifications/notification.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AdminService {
@@ -27,6 +28,7 @@ export class AdminService {
     private reviewsRepository: Repository<Review>,
     @InjectRepository(Notification)
     private notificationsRepository: Repository<Notification>,
+    private notificationsService: NotificationsService,
   ) {}
 
   // ─── DASHBOARD STATS ──────────────────────────────────
@@ -40,7 +42,7 @@ export class AdminService {
       where: { is_verified: true },
     });
     const pendingCooks = await this.cooksRepository.count({
-      where: { is_verified: false },
+      where: { verification_status: VerificationStatus.PENDING },
     });
 
     const totalBookings = await this.bookingsRepository.count();
@@ -141,55 +143,38 @@ export class AdminService {
       throw new BadRequestException('Cannot delete an admin account');
     }
 
-    // 1. Delete notifications for this user
     await this.notificationsRepository.delete({ user_id: userId });
-
-    // 2. Delete reviews by this user
     await this.reviewsRepository.delete({ user_id: userId });
 
-    // 3. Find all bookings by this user
     const userBookings = await this.bookingsRepository.find({
       where: { user_id: userId },
     });
 
     for (const booking of userBookings) {
-      // Delete payment for this booking
       await this.paymentsRepository.delete({ booking_id: booking.id });
-      // Delete review for this booking (if reviewer was the cook or someone else)
       await this.reviewsRepository.delete({ booking_id: booking.id });
     }
 
-    // 4. Delete all bookings by this user
     await this.bookingsRepository.delete({ user_id: userId });
 
-    // 5. If user is a cook, delete cook-related data
     const cook = await this.cooksRepository.findOne({
       where: { user_id: userId },
     });
 
     if (cook) {
-      // Delete reviews where this cook was reviewed
       await this.reviewsRepository.delete({ cook_id: cook.id });
-
-      // Delete bookings where this cook was booked
       const cookBookings = await this.bookingsRepository.find({
         where: { cook_id: cook.id },
       });
-
       for (const booking of cookBookings) {
         await this.paymentsRepository.delete({ booking_id: booking.id });
         await this.reviewsRepository.delete({ booking_id: booking.id });
       }
-
       await this.bookingsRepository.delete({ cook_id: cook.id });
-
-      // Delete the cook profile
       await this.cooksRepository.delete({ id: cook.id });
     }
 
-    // 6. Finally delete the user
     await this.usersRepository.delete({ id: userId });
-
     return { message: `User "${user.name}" and all related data deleted` };
   }
 
@@ -216,20 +201,65 @@ export class AdminService {
     };
   }
 
+  // ─── GET PENDING VERIFICATION COOKS ───────────────────
+  async getPendingVerifications(page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+
+    const [cooks, total] = await this.cooksRepository.findAndCount({
+      where: { verification_status: VerificationStatus.PENDING },
+      relations: ['user'],
+      order: { created_at: 'ASC' }, // oldest first
+      skip,
+      take: limit,
+    });
+
+    return {
+      cooks,
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
+    };
+  }
+
   // ─── VERIFY / REJECT COOK ────────────────────────────
-  async verifyCook(cookId: string, verified: boolean) {
+  async verifyCook(cookId: string, verified: boolean, rejectionReason?: string) {
     const cook = await this.cooksRepository.findOne({
       where: { id: cookId },
+      relations: ['user'],
     });
 
     if (!cook) {
       throw new NotFoundException('Cook not found');
     }
 
-    cook.is_verified = verified;
-    await this.cooksRepository.save(cook);
+    if (verified) {
+      cook.is_verified = true;
+      cook.verification_status = VerificationStatus.APPROVED;
+      cook.verified_at = new Date();
+      cook.verification_rejection_reason = null;
+      await this.cooksRepository.save(cook);
 
-    return { message: verified ? 'Cook verified' : 'Cook rejected', cook };
+      // Notify chef
+      if (cook.user_id) {
+        this.notificationsService
+          .notifyCookVerified(cook.user_id)
+          .catch(() => {});
+      }
+
+      return { message: 'Cook verified successfully', cook };
+    } else {
+      cook.is_verified = false;
+      cook.verification_status = VerificationStatus.REJECTED;
+      cook.verification_rejection_reason = rejectionReason || null;
+      await this.cooksRepository.save(cook);
+
+      // Notify chef
+      if (cook.user_id) {
+        this.notificationsService
+          .notifyCookRejected(cook.user_id, rejectionReason)
+          .catch(() => {});
+      }
+
+      return { message: 'Cook verification rejected', cook };
+    }
   }
 
   // ─── DELETE COOK (cascade) ────────────────────────────
@@ -243,25 +273,17 @@ export class AdminService {
       throw new NotFoundException('Cook not found');
     }
 
-    // Delete reviews for this cook
     await this.reviewsRepository.delete({ cook_id: cookId });
-
-    // Find and delete bookings + payments for this cook
     const cookBookings = await this.bookingsRepository.find({
       where: { cook_id: cookId },
     });
-
     for (const booking of cookBookings) {
       await this.paymentsRepository.delete({ booking_id: booking.id });
       await this.reviewsRepository.delete({ booking_id: booking.id });
     }
-
     await this.bookingsRepository.delete({ cook_id: cookId });
-
-    // Delete the cook profile (but keep the user account)
     await this.cooksRepository.delete({ id: cookId });
 
-    // Revert user role back to 'user'
     if (cook.user) {
       cook.user.role = UserRole.USER;
       await this.usersRepository.save(cook.user);
@@ -272,34 +294,17 @@ export class AdminService {
 
   // ─── BLOCK / UNBLOCK USER ────────────────────────────
   async toggleUserActive(userId: string) {
-    const user = await this.usersRepository.findOne({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (user.role === UserRole.ADMIN) {
-      throw new BadRequestException('Cannot block an admin');
-    }
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.role === UserRole.ADMIN) throw new BadRequestException('Cannot block an admin');
 
     user.is_active = !user.is_active;
     await this.usersRepository.save(user);
-
-    return {
-      message: user.is_active ? 'User unblocked' : 'User blocked',
-      is_active: user.is_active,
-    };
+    return { message: user.is_active ? 'User unblocked' : 'User blocked', is_active: user.is_active };
   }
 
   // ─── GET ALL BOOKINGS ────────────────────────────────
-  async getBookings(
-    status?: BookingStatus,
-    search?: string,
-    page = 1,
-    limit = 20,
-  ) {
+  async getBookings(status?: BookingStatus, search?: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
     const qb = this.bookingsRepository
@@ -311,83 +316,48 @@ export class AdminService {
       .skip(skip)
       .take(limit);
 
-    if (status) {
-      qb.andWhere('b.status = :status', { status });
-    }
-
+    if (status) qb.andWhere('b.status = :status', { status });
     if (search) {
-      qb.andWhere('(u.name ILIKE :search OR cu.name ILIKE :search)', {
-        search: `%${search}%`,
-      });
+      qb.andWhere('(u.name ILIKE :search OR cu.name ILIKE :search)', { search: `%${search}%` });
     }
 
     const [bookings, total] = await qb.getManyAndCount();
-
     return {
       bookings,
-      pagination: {
-        page,
-        limit,
-        total,
-        total_pages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
     };
   }
 
   // ─── UPDATE BOOKING STATUS ────────────────────────────
   async updateBookingStatus(bookingId: string, status: BookingStatus) {
-    const booking = await this.bookingsRepository.findOne({
-      where: { id: bookingId },
-    });
-
-    if (!booking) {
-      throw new NotFoundException('Booking not found');
-    }
+    const booking = await this.bookingsRepository.findOne({ where: { id: bookingId } });
+    if (!booking) throw new NotFoundException('Booking not found');
 
     booking.status = status;
-
     const now = new Date();
     if (status === BookingStatus.COMPLETED) booking.completed_at = now;
-    if (
-      status === BookingStatus.CANCELLED_BY_USER ||
-      status === BookingStatus.CANCELLED_BY_COOK
-    )
+    if (status === BookingStatus.CANCELLED_BY_USER || status === BookingStatus.CANCELLED_BY_COOK) {
       booking.cancelled_at = now;
+    }
 
     await this.bookingsRepository.save(booking);
-
     return booking;
   }
 
   // ─── DELETE BOOKING (cascade) ─────────────────────────
   async deleteBooking(bookingId: string) {
-    const booking = await this.bookingsRepository.findOne({
-      where: { id: bookingId },
-      relations: ['user'],
-    });
+    const booking = await this.bookingsRepository.findOne({ where: { id: bookingId } });
+    if (!booking) throw new NotFoundException('Booking not found');
 
-    if (!booking) {
-      throw new NotFoundException('Booking not found');
-    }
-
-    // Delete payment for this booking
     await this.paymentsRepository.delete({ booking_id: bookingId });
-
-    // Delete review for this booking
     await this.reviewsRepository.delete({ booking_id: bookingId });
-
-    // Delete the booking
     await this.bookingsRepository.delete({ id: bookingId });
-
-    return { message: `Booking deleted` };
+    return { message: 'Booking deleted' };
   }
 
   // ─── GET RECENT USERS ────────────────────────────────
   async getRecentUsers(limit = 5) {
-    return this.usersRepository.find({
-      order: { created_at: 'DESC' },
-      take: limit,
-    });
+    return this.usersRepository.find({ order: { created_at: 'DESC' }, take: limit });
   }
 
   // ─── GET RECENT BOOKINGS ─────────────────────────────

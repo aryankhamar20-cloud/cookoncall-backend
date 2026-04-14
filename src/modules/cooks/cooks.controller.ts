@@ -22,6 +22,7 @@ import {
   CreateMenuItemDto,
   UpdateMenuItemDto,
   SearchCooksDto,
+  SubmitVerificationDto,
 } from './dto/cook.dto';
 
 @Controller('cooks')
@@ -82,6 +83,25 @@ export class CooksController {
     return this.cooksService.getMyProfile(user.id);
   }
 
+  /** Submit verification documents for admin review */
+  @Post('me/submit-verification')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.COOK)
+  async submitVerification(
+    @CurrentUser() user: User,
+    @Body() dto: SubmitVerificationDto,
+  ) {
+    return this.cooksService.submitVerification(user.id, dto);
+  }
+
+  /** Check current verification status */
+  @Get('me/verification-status')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.COOK)
+  async getVerificationStatus(@CurrentUser() user: User) {
+    return this.cooksService.getVerificationStatus(user.id);
+  }
+
   @Get('me/earnings')
   @UseGuards(RolesGuard)
   @Roles(UserRole.COOK)
@@ -106,6 +126,14 @@ export class CooksController {
     @Body() dto: CreateMenuItemDto,
   ) {
     return this.cooksService.addMenuItem(user.id, dto);
+  }
+
+  @Get('me/menu')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.COOK)
+  async getMyMenu(@CurrentUser() user: User) {
+    const cook = await this.cooksService.findByUserId(user.id);
+    return this.cooksService.getCookMenu(cook.id);
   }
 
   @Patch('me/menu/:itemId')

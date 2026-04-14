@@ -77,12 +77,21 @@ export class AdminController {
     return this.adminService.getCooks(isVerified, page || 1, limit || 20);
   }
 
+  /** Get cooks with pending verification — for admin review panel */
+  @Get('cooks/pending')
+  async getPendingVerifications(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.adminService.getPendingVerifications(page || 1, limit || 20);
+  }
+
   @Patch('cooks/:id/verify')
   async verifyCook(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body('verified') verified: boolean,
+    @Body() body: { verified: boolean; rejection_reason?: string },
   ) {
-    return this.adminService.verifyCook(id, verified);
+    return this.adminService.verifyCook(id, body.verified, body.rejection_reason);
   }
 
   @Delete('cooks/:id')

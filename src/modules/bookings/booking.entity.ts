@@ -99,6 +99,30 @@ export class Booking {
   @Column({ type: 'text', nullable: true })
   cancellation_reason: string;
 
+  // ─── COOKING SESSION OTP ─────────────────────────────
+  // Start OTP: sent to customer when chef clicks "Start Cooking"
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  start_otp: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  start_otp_expires_at: Date;
+
+  // End OTP: sent to customer when chef clicks "End Session"
+  @Column({ type: 'varchar', length: 6, nullable: true })
+  end_otp: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  end_otp_expires_at: Date;
+
+  // Actual cooking duration in minutes (calculated from started_at to completed_at)
+  @Column({ type: 'int', nullable: true })
+  actual_duration_minutes: number;
+
+  // ─── CANCELLATION REFUND ─────────────────────────────
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  refund_amount: number;
+
+  // ─── TIMESTAMPS ──────────────────────────────────────
   @Column({ type: 'timestamptz', nullable: true })
   confirmed_at: Date;
 

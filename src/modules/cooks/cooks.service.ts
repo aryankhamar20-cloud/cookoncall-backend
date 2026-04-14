@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Cook } from './cook.entity';
+import { Cook, VerificationStatus } from './cook.entity';
 import { MenuItem } from './menu-item.entity';
 import { User, UserRole } from '../users/user.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
@@ -16,6 +16,7 @@ import {
   CreateMenuItemDto,
   UpdateMenuItemDto,
   SearchCooksDto,
+  SubmitVerificationDto,
 } from './dto/cook.dto';
 
 @Injectable()
@@ -41,12 +42,14 @@ export class CooksService {
       throw new BadRequestException('Cook profile already exists');
     }
 
-    // Update user role to cook
     await this.usersRepository.update(userId, { role: UserRole.COOK });
 
     const cook = this.cooksRepository.create({
       user_id: userId,
       ...dto,
+      // New cooks start unverified with not_submitted status
+      is_verified: false,
+      verification_status: VerificationStatus.NOT_SUBMITTED,
     });
 
     return this.cooksRepository.save(cook);
@@ -59,9 +62,69 @@ export class CooksService {
     return this.cooksRepository.save(cook);
   }
 
+  // ─── SUBMIT VERIFICATION ─────────────────────────────
+  // Chef uploads docs + emergency contact + accepts terms → status goes to PENDING
+  async submitVerification(userId: string, dto: SubmitVerificationDto) {
+    const cook = await this.findByUserId(userId);
+
+    if (!dto.terms_accepted) {
+      throw new BadRequestException('You must accept the Terms and Conditions to proceed');
+    }
+
+    // Check profile photo exists (user avatar)
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user?.avatar) {
+      throw new BadRequestException('Profile photo is mandatory. Please upload your photo first.');
+    }
+
+    // Save verification documents
+    cook.aadhaar_url = dto.aadhaar_url;
+    cook.pan_url = dto.pan_url;
+    cook.address_proof_url = dto.address_proof_url || null;
+    cook.fssai_url = dto.fssai_url || null;
+    cook.emergency_contact_name = dto.emergency_contact_name;
+    cook.emergency_contact_phone = dto.emergency_contact_phone;
+    cook.terms_accepted = true;
+    cook.terms_accepted_at = new Date();
+    cook.verification_status = VerificationStatus.PENDING;
+    cook.verification_rejection_reason = null; // Clear any previous rejection
+
+    await this.cooksRepository.save(cook);
+
+    return {
+      message: 'Verification documents submitted. Your profile is now under review.',
+      verification_status: cook.verification_status,
+    };
+  }
+
+  // ─── GET VERIFICATION STATUS ──────────────────────────
+  async getVerificationStatus(userId: string) {
+    const cook = await this.findByUserId(userId);
+    return {
+      verification_status: cook.verification_status,
+      is_verified: cook.is_verified,
+      rejection_reason: cook.verification_rejection_reason,
+      aadhaar_uploaded: !!cook.aadhaar_url,
+      pan_uploaded: !!cook.pan_url,
+      address_proof_uploaded: !!cook.address_proof_url,
+      fssai_uploaded: !!cook.fssai_url,
+      emergency_contact_set: !!cook.emergency_contact_name,
+      terms_accepted: cook.terms_accepted,
+      profile_photo_set: !!cook.user?.avatar,
+    };
+  }
+
   // ─── TOGGLE AVAILABILITY ──────────────────────────────
   async toggleAvailability(userId: string) {
     const cook = await this.findByUserId(userId);
+
+    // Block unverified chefs from going online
+    if (!cook.is_verified) {
+      throw new BadRequestException(
+        'Your profile must be verified before you can go online. Please submit your verification documents.',
+      );
+    }
+
     cook.is_available = !cook.is_available;
     await this.cooksRepository.save(cook);
     return { is_available: cook.is_available };
@@ -84,6 +147,11 @@ export class CooksService {
       .where('c.is_verified = true')
       .andWhere('c.is_available = true')
       .andWhere('u.is_active = true');
+
+    // Search by chef name
+    if (dto.search) {
+      qb.andWhere('u.name ILIKE :search', { search: `%${dto.search}%` });
+    }
 
     if (dto.city) {
       qb.andWhere('LOWER(c.city) = LOWER(:city)', { city: dto.city });
@@ -109,10 +177,25 @@ export class CooksService {
       qb.andWhere('c.rating >= :minRating', { minRating: dto.min_rating });
     }
 
-    qb.orderBy('c.rating', 'DESC')
-      .addOrderBy('c.total_bookings', 'DESC')
-      .skip(skip)
-      .take(limit);
+    // Sorting
+    switch (dto.sort_by) {
+      case 'price_asc':
+        qb.orderBy('c.price_per_session', 'ASC');
+        break;
+      case 'price_desc':
+        qb.orderBy('c.price_per_session', 'DESC');
+        break;
+      case 'rating':
+        qb.orderBy('c.rating', 'DESC');
+        break;
+      case 'bookings':
+        qb.orderBy('c.total_bookings', 'DESC');
+        break;
+      default:
+        qb.orderBy('c.rating', 'DESC').addOrderBy('c.total_bookings', 'DESC');
+    }
+
+    qb.skip(skip).take(limit);
 
     const [cooks, total] = await qb.getManyAndCount();
 
@@ -257,6 +340,7 @@ export class CooksService {
       total_reviews: cook.total_reviews,
       is_available: cook.is_available,
       is_verified: cook.is_verified,
+      verification_status: cook.verification_status,
     };
   }
 

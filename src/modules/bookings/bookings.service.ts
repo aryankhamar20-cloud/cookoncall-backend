@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Booking, BookingStatus, BookingType } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
 import { User } from '../users/user.entity';
@@ -15,19 +16,27 @@ import {
   UpdateBookingStatusDto,
   GetBookingsDto,
 } from './dto/booking.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const PLATFORM_FEE_PERCENT = 0.15; // 15%
 
 @Injectable()
 export class BookingsService {
   private readonly logger = new Logger(BookingsService.name);
+  private brevoApiKey: string;
 
   constructor(
     @InjectRepository(Booking)
     private bookingsRepository: Repository<Booking>,
     @InjectRepository(Cook)
     private cooksRepository: Repository<Cook>,
-  ) {}
+    @InjectRepository(User)
+    private usersRepository: Repository<User>,
+    private notificationsService: NotificationsService,
+    private configService: ConfigService,
+  ) {
+    this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
+  }
 
   // ─── CREATE BOOKING ───────────────────────────────────
   async createBooking(userId: string, dto: CreateBookingDto) {
@@ -59,17 +68,18 @@ export class BookingsService {
       throw new BadRequestException('Scheduled date must be in the future');
     }
 
+    // Get customer info for notification
+    const customer = await this.usersRepository.findOne({ where: { id: userId } });
+
     // Calculate price
     let subtotal: number;
 
     if (dto.booking_type === BookingType.FOOD_DELIVERY && dto.order_items?.length) {
-      // Sum up order items
       subtotal = dto.order_items.reduce(
         (sum, item) => sum + item.price * item.qty,
         0,
       );
     } else {
-      // Home cooking — based on session price * duration
       const hours = dto.duration_hours || 2;
       subtotal = Number(cook.price_per_session) * hours;
     }
@@ -97,6 +107,11 @@ export class BookingsService {
     });
 
     const saved = await this.bookingsRepository.save(booking);
+
+    // ─── NOTIFY: Booking created → chef + customer ───
+    this.notificationsService
+      .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
+      .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
 
     return this.findById(saved.id);
   }
@@ -130,7 +145,6 @@ export class BookingsService {
 
   // ─── GET COOK BOOKINGS (REQUESTS) ─────────────────────
   async getCookBookings(userId: string, dto: GetBookingsDto) {
-    // Find the cook profile by user_id
     const cook = await this.cooksRepository.findOne({
       where: { user_id: userId },
     });
@@ -210,33 +224,253 @@ export class BookingsService {
     // Update status
     booking.status = dto.status;
 
-    // Set timestamps
+    // Set timestamps + send notifications
     const now = new Date();
     switch (dto.status) {
       case BookingStatus.CONFIRMED:
         booking.confirmed_at = now;
+        // ─── NOTIFY: Chef accepted → customer ───
+        this.notificationsService
+          .notifyBookingConfirmed(
+            booking.user_id,
+            bookingId,
+            booking.cook?.user?.name || 'Your chef',
+          )
+          .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
         break;
+
       case BookingStatus.IN_PROGRESS:
         booking.started_at = now;
+        // Notification handled by verifyStartOtp
         break;
+
       case BookingStatus.COMPLETED:
         booking.completed_at = now;
+        // Calculate actual duration
+        if (booking.started_at) {
+          booking.actual_duration_minutes = Math.round(
+            (now.getTime() - new Date(booking.started_at).getTime()) / (1000 * 60),
+          );
+        }
         // Update cook stats
         if (cook) {
           cook.total_bookings += 1;
           await this.cooksRepository.save(cook);
         }
+        // ─── NOTIFY: Session completed → both ───
+        this.notificationsService
+          .notifySessionCompleted(
+            booking.user_id,
+            booking.cook?.user_id,
+            bookingId,
+            booking.actual_duration_minutes || 0,
+          )
+          .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+        // ─── NOTIFY: Review prompt → customer (delayed) ───
+        this.notificationsService
+          .notifyReviewPrompt(
+            booking.user_id,
+            bookingId,
+            booking.cook?.user?.name || 'your chef',
+          )
+          .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
         break;
+
       case BookingStatus.CANCELLED_BY_USER:
+        booking.cancelled_at = now;
+        booking.cancellation_reason = dto.cancellation_reason || null;
+        // Calculate refund
+        booking.refund_amount = this.getCancellationRefund(booking);
+        // ─── NOTIFY: Customer cancelled → chef ───
+        if (booking.cook?.user_id) {
+          this.notificationsService
+            .notifyBookingCancelled(booking.cook.user_id, bookingId, 'customer')
+            .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+        }
+        break;
+
       case BookingStatus.CANCELLED_BY_COOK:
         booking.cancelled_at = now;
         booking.cancellation_reason = dto.cancellation_reason || null;
+        // Chef cancels → full refund to customer
+        booking.refund_amount = Number(booking.total_price);
+        // ─── NOTIFY: Chef cancelled → customer ───
+        this.notificationsService
+          .notifyBookingCancelled(booking.user_id, bookingId, 'chef')
+          .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
         break;
     }
 
     await this.bookingsRepository.save(booking);
 
     return this.findById(bookingId);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // COOKING SESSION OTP
+  // ═══════════════════════════════════════════════════════
+
+  /** Chef clicks "Start Cooking" → OTP sent to customer email */
+  async sendStartOtp(bookingId: string, userId: string) {
+    const booking = await this.findById(bookingId);
+
+    // Only the assigned cook can send start OTP
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can start this session');
+    }
+
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      throw new BadRequestException('Booking must be confirmed before starting');
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    booking.start_otp = otp;
+    booking.start_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    await this.bookingsRepository.save(booking);
+
+    // Send OTP to customer email
+    const customerEmail = booking.user?.email;
+    if (customerEmail) {
+      this.sendCookingOtpEmail(customerEmail, otp, 'start', booking.cook?.user?.name || 'Your chef')
+        .catch((err) => this.logger.warn(`Start OTP email failed: ${err.message}`));
+    }
+
+    return { message: 'Start OTP sent to customer', expires_in_minutes: 10 };
+  }
+
+  /** Chef enters start OTP → session starts */
+  async verifyStartOtp(bookingId: string, userId: string, otp: string) {
+    const booking = await this.findById(bookingId);
+
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can verify this OTP');
+    }
+
+    if (!booking.start_otp || !booking.start_otp_expires_at) {
+      throw new BadRequestException('No start OTP requested');
+    }
+
+    if (new Date() > booking.start_otp_expires_at) {
+      throw new BadRequestException('Start OTP expired. Please request a new one.');
+    }
+
+    if (booking.start_otp !== otp) {
+      throw new BadRequestException('Invalid OTP');
+    }
+
+    // OTP verified → start session
+    booking.status = BookingStatus.IN_PROGRESS;
+    booking.started_at = new Date();
+    booking.start_otp = null;
+    booking.start_otp_expires_at = null;
+    await this.bookingsRepository.save(booking);
+
+    // ─── NOTIFY: Cooking started → customer ───
+    this.notificationsService
+      .notifySessionStarted(
+        booking.user_id,
+        bookingId,
+        booking.cook?.user?.name || 'Your chef',
+      )
+      .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+
+    return { message: 'Cooking session started', started_at: booking.started_at };
+  }
+
+  /** Chef clicks "End Session" → OTP sent to customer email */
+  async sendEndOtp(bookingId: string, userId: string) {
+    const booking = await this.findById(bookingId);
+
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can end this session');
+    }
+
+    if (booking.status !== BookingStatus.IN_PROGRESS) {
+      throw new BadRequestException('Session must be in progress to end it');
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    booking.end_otp = otp;
+    booking.end_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000);
+    await this.bookingsRepository.save(booking);
+
+    const customerEmail = booking.user?.email;
+    if (customerEmail) {
+      this.sendCookingOtpEmail(customerEmail, otp, 'end', booking.cook?.user?.name || 'Your chef')
+        .catch((err) => this.logger.warn(`End OTP email failed: ${err.message}`));
+    }
+
+    return { message: 'End OTP sent to customer', expires_in_minutes: 10 };
+  }
+
+  /** Chef enters end OTP → session ends, duration calculated */
+  async verifyEndOtp(bookingId: string, userId: string, otp: string) {
+    const booking = await this.findById(bookingId);
+
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can verify this OTP');
+    }
+
+    if (!booking.end_otp || !booking.end_otp_expires_at) {
+      throw new BadRequestException('No end OTP requested');
+    }
+
+    if (new Date() > booking.end_otp_expires_at) {
+      throw new BadRequestException('End OTP expired. Please request a new one.');
+    }
+
+    if (booking.end_otp !== otp) {
+      throw new BadRequestException('Invalid OTP');
+    }
+
+    // OTP verified → complete session
+    const now = new Date();
+    booking.status = BookingStatus.COMPLETED;
+    booking.completed_at = now;
+    booking.end_otp = null;
+    booking.end_otp_expires_at = null;
+
+    // Calculate actual duration
+    if (booking.started_at) {
+      booking.actual_duration_minutes = Math.round(
+        (now.getTime() - new Date(booking.started_at).getTime()) / (1000 * 60),
+      );
+    }
+
+    await this.bookingsRepository.save(booking);
+
+    // Update cook stats
+    cook.total_bookings += 1;
+    await this.cooksRepository.save(cook);
+
+    // ─── NOTIFY: Session completed → both ───
+    this.notificationsService
+      .notifySessionCompleted(
+        booking.user_id,
+        cook.user_id,
+        bookingId,
+        booking.actual_duration_minutes || 0,
+      )
+      .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+
+    // ─── NOTIFY: Review prompt → customer ───
+    this.notificationsService
+      .notifyReviewPrompt(
+        booking.user_id,
+        bookingId,
+        booking.cook?.user?.name || 'your chef',
+      )
+      .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+
+    return {
+      message: 'Cooking session completed',
+      completed_at: booking.completed_at,
+      actual_duration_minutes: booking.actual_duration_minutes,
+    };
   }
 
   // ─── STATUS TRANSITION VALIDATION ─────────────────────
@@ -272,7 +506,6 @@ export class BookingsService {
       );
     }
 
-    // Role-based restrictions
     if (next === BookingStatus.CONFIRMED && !isCook && !isAdmin) {
       throw new ForbiddenException('Only the cook can confirm a booking');
     }
@@ -285,18 +518,96 @@ export class BookingsService {
       throw new ForbiddenException('Only the cook can cancel as cook');
     }
 
-    if (next === BookingStatus.COMPLETED && !isUser && !isAdmin) {
-      throw new ForbiddenException('Only the customer can mark as completed');
+    // Note: COMPLETED is now handled via verifyEndOtp primarily
+    // But we keep the manual option for admin
+    if (next === BookingStatus.COMPLETED && !isAdmin) {
+      throw new ForbiddenException('Session completion requires end OTP verification');
     }
   }
 
   // ─── CANCELLATION REFUND CALCULATION ──────────────────
+  // Policy: 4+ hours = full refund, 2-4 hours = 50%, <2 hours = no refund
+  // Chef cancels = always full refund
   getCancellationRefund(booking: Booking): number {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
 
-    if (hoursUntil > 24) return booking.total_price; // Full refund
-    if (hoursUntil > 6) return booking.total_price * 0.5; // 50% refund
-    return 0; // No refund
+    if (hoursUntil >= 4) return Number(booking.total_price); // Full refund
+    if (hoursUntil >= 2) return Number(booking.total_price) * 0.5; // 50% refund
+    return 0; // No refund within 2 hours
+  }
+
+  // ─── SEND COOKING OTP EMAIL (via Brevo) ───────────────
+  private async sendCookingOtpEmail(
+    email: string,
+    otp: string,
+    type: 'start' | 'end',
+    chefName: string,
+  ) {
+    if (!this.brevoApiKey) {
+      this.logger.warn(`BREVO_API_KEY not configured — cooking OTP for ${email}: ${otp}`);
+      return;
+    }
+
+    const isStart = type === 'start';
+    const subject = isStart
+      ? 'Your Cooking Session OTP - Start'
+      : 'Your Cooking Session OTP - End';
+
+    const heading = isStart
+      ? 'Cooking Session Starting!'
+      : 'Cooking Session Ending';
+
+    const message = isStart
+      ? `${chefName} is ready to start cooking! Share this OTP with your chef to begin the session.`
+      : `${chefName} has finished cooking. Share this OTP with your chef to end the session.`;
+
+    const html = `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+        </div>
+        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">${heading}</h2>
+        <p style="text-align: center; color: #8B7355; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+          ${message}
+        </p>
+        <div style="background: white; border-radius: 12px; padding: 20px; text-align: center; border: 2px dashed #FFB347; margin-bottom: 24px;">
+          <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #D4721A;">${otp}</div>
+          <div style="font-size: 12px; color: #8B7355; margin-top: 8px;">Valid for 10 minutes</div>
+        </div>
+        <p style="text-align: center; color: #B0A090; font-size: 12px;">
+          Do not share this OTP with anyone other than your chef.
+        </p>
+        <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
+        <p style="text-align: center; color: #B0A090; font-size: 11px;">
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, India
+        </p>
+      </div>
+    `;
+
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': this.brevoApiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: 'CookOnCall', email: 'aryankhamar20@gmail.com' },
+          to: [{ email }],
+          subject,
+          htmlContent: html,
+        }),
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        this.logger.log(`Cooking OTP (${type}) sent to ${email} — messageId: ${result.messageId}`);
+      } else {
+        this.logger.error(`Brevo error for cooking OTP: ${JSON.stringify(result)}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to send cooking OTP to ${email}`, error);
+    }
   }
 }

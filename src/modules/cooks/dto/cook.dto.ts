@@ -88,6 +88,62 @@ export class UpdateCookProfileDto {
   @IsOptional()
   @IsBoolean()
   is_available?: boolean;
+
+  // Verification doc URLs (can be updated individually)
+  @IsOptional()
+  @IsString()
+  aadhaar_url?: string;
+
+  @IsOptional()
+  @IsString()
+  pan_url?: string;
+
+  @IsOptional()
+  @IsString()
+  address_proof_url?: string;
+
+  @IsOptional()
+  @IsString()
+  fssai_url?: string;
+
+  @IsOptional()
+  @IsString()
+  emergency_contact_name?: string;
+
+  @IsOptional()
+  @IsString()
+  emergency_contact_phone?: string;
+}
+
+// ─── SUBMIT VERIFICATION ────────────────────────────────
+// Chef uploads all required docs + info and submits for admin review
+export class SubmitVerificationDto {
+  @IsString()
+  @IsNotEmpty()
+  aadhaar_url: string;
+
+  @IsString()
+  @IsNotEmpty()
+  pan_url: string;
+
+  @IsOptional()
+  @IsString()
+  address_proof_url?: string;
+
+  @IsOptional()
+  @IsString()
+  fssai_url?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  emergency_contact_name: string;
+
+  @IsString()
+  @IsNotEmpty()
+  emergency_contact_phone: string;
+
+  @IsBoolean()
+  terms_accepted: boolean;
 }
 
 export class CreateMenuItemDto {
@@ -158,6 +214,10 @@ export class SearchCooksDto {
   cuisine?: string;
 
   @IsOptional()
+  @IsString()
+  search?: string; // Search by chef name
+
+  @IsOptional()
   @IsBoolean()
   @Type(() => Boolean)
   veg_only?: boolean;
@@ -176,6 +236,10 @@ export class SearchCooksDto {
   @IsNumber()
   @Type(() => Number)
   min_rating?: number;
+
+  @IsOptional()
+  @IsString()
+  sort_by?: string; // 'rating' | 'price_asc' | 'price_desc' | 'bookings'
 
   @IsOptional()
   @IsNumber()
