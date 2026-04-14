@@ -14,9 +14,10 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../users/user.entity';
 import { BookingStatus } from '../bookings/booking.entity';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('admin')
-@UseGuards(RolesGuard)
+@UseGuards(JwtAuthGuard ,RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
