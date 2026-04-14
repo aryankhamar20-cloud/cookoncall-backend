@@ -83,6 +83,17 @@ export class AuthController {
     return this.authService.forgotPassword(dto);
   }
 
+  // ─── VERIFY FORGOT PASSWORD OTP (two-step flow) ───────
+  @Public()
+  @Post('verify-forgot-otp')
+  @HttpCode(HttpStatus.OK)
+  async verifyForgotOtp(@Body() dto: VerifyEmailOtpDto) {
+    return this.authService.verifyForgotOtp({
+      email: dto.email,
+      otp: dto.otp,
+    });
+  }
+
   @Public()
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)

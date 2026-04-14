@@ -25,6 +25,55 @@ import {
 } from './dto/otp.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 
+// ─── In-memory OTP rate limiter ──────────────────────────
+// Key: email, Value: { count, windowStart }
+// Max 1 OTP per email per 2 minutes, max 5 per email per day
+interface RateLimitEntry {
+  count: number;
+  windowStart: number; // timestamp ms
+  lastSent: number; // timestamp ms
+}
+
+const otpRateLimits = new Map<string, RateLimitEntry>();
+const OTP_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes between OTPs
+const OTP_DAILY_MAX = 5;
+const OTP_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function checkOtpRateLimit(email: string): void {
+  const now = Date.now();
+  const key = email.toLowerCase();
+  const entry = otpRateLimits.get(key);
+
+  if (!entry) {
+    otpRateLimits.set(key, { count: 1, windowStart: now, lastSent: now });
+    return;
+  }
+
+  // Reset daily window if expired
+  if (now - entry.windowStart > OTP_DAILY_WINDOW_MS) {
+    otpRateLimits.set(key, { count: 1, windowStart: now, lastSent: now });
+    return;
+  }
+
+  // Check cooldown (2 min between OTPs)
+  if (now - entry.lastSent < OTP_COOLDOWN_MS) {
+    const waitSecs = Math.ceil((OTP_COOLDOWN_MS - (now - entry.lastSent)) / 1000);
+    throw new BadRequestException(
+      `Please wait ${waitSecs} seconds before requesting another OTP.`,
+    );
+  }
+
+  // Check daily limit
+  if (entry.count >= OTP_DAILY_MAX) {
+    throw new BadRequestException(
+      'Too many OTP requests today. Please try again tomorrow.',
+    );
+  }
+
+  entry.count += 1;
+  entry.lastSent = now;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -42,6 +91,8 @@ export class AuthService {
   }
 
   // ─── REGISTER ──────────────────────────────────────────
+  // Round A Fix #1: Do NOT return tokens on registration.
+  // User must verify email OTP first, then gets tokens.
   async register(dto: RegisterDto) {
     const exists = await this.usersRepository.findOne({
       where: { email: dto.email.toLowerCase() },
@@ -80,22 +131,23 @@ export class AuthService {
       await this.cooksRepository.save(cookProfile);
     }
 
-    const tokens = await this.generateTokens(user);
-    await this.updateRefreshToken(user.id, tokens.refresh_token);
-
     // Send email verification OTP in background — don't block registration response
     this.sendEmailVerificationOtp(user).catch((err) => {
-      this.logger.warn(`Failed to send verification email to ${user.email}: ${err.message}`);
+      this.logger.warn(
+        `Failed to send verification email to ${user.email}: ${err.message}`,
+      );
     });
 
+    // Return user info but NO tokens — user must verify email first
     return {
       user: this.sanitizeUser(user),
-      ...tokens,
       email_verification_sent: true,
+      message: 'Account created. Please verify your email to continue.',
     };
   }
 
   // ─── LOGIN ─────────────────────────────────────────────
+  // Round A Fix #1 (cont): Block login if email not verified
   async login(dto: LoginDto) {
     const user = await this.usersRepository.findOne({
       where: { email: dto.email.toLowerCase() },
@@ -112,6 +164,19 @@ export class AuthService {
     const passwordValid = await bcrypt.compare(dto.password, user.password);
     if (!passwordValid) {
       throw new UnauthorizedException('Invalid email or password');
+    }
+
+    // Block login if email is not verified (except admin accounts)
+    if (!user.email_verified && user.role !== UserRole.ADMIN) {
+      // Re-send verification OTP in background
+      this.sendEmailVerificationOtp(user).catch((err) => {
+        this.logger.warn(
+          `Failed to re-send verification email to ${user.email}: ${err.message}`,
+        );
+      });
+      throw new UnauthorizedException(
+        'EMAIL_NOT_VERIFIED',
+      );
     }
 
     const tokens = await this.generateTokens(user);
@@ -163,6 +228,7 @@ export class AuthService {
   }
 
   // ─── SEND EMAIL OTP (for email verification) ──────────
+  // Round A Fix #8: Rate limiting
   async sendEmailOtp(dto: SendEmailOtpDto) {
     const user = await this.usersRepository.findOne({
       where: { email: dto.email.toLowerCase() },
@@ -176,12 +242,16 @@ export class AuthService {
       return { message: 'Email already verified' };
     }
 
+    // Rate limit check
+    checkOtpRateLimit(user.email);
+
     await this.sendEmailVerificationOtp(user);
 
     return { message: 'Verification OTP sent to your email' };
   }
 
   // ─── VERIFY EMAIL OTP ─────────────────────────────────
+  // Round A Fix #1 (cont): After OTP verification, return tokens so user can login
   async verifyEmailOtp(dto: VerifyEmailOtpDto) {
     const user = await this.usersRepository.findOne({
       where: { email: dto.email.toLowerCase() },
@@ -192,18 +262,29 @@ export class AuthService {
     }
 
     if (user.email_verified) {
-      return { message: 'Email already verified' };
+      // Already verified — just return tokens so they can proceed
+      const tokens = await this.generateTokens(user);
+      await this.updateRefreshToken(user.id, tokens.refresh_token);
+      return {
+        message: 'Email already verified',
+        user: this.sanitizeUser(user),
+        ...tokens,
+      };
     }
 
     if (!user.otp || !user.otp_expires_at) {
-      throw new BadRequestException('No OTP requested. Please request a new OTP.');
+      throw new BadRequestException(
+        'No OTP requested. Please request a new OTP.',
+      );
     }
 
     if (new Date() > user.otp_expires_at) {
       user.otp = null;
       user.otp_expires_at = null;
       await this.usersRepository.save(user);
-      throw new BadRequestException('OTP has expired. Please request a new one.');
+      throw new BadRequestException(
+        'OTP has expired. Please request a new one.',
+      );
     }
 
     if (user.otp !== dto.otp) {
@@ -216,7 +297,15 @@ export class AuthService {
     user.otp_expires_at = null;
     await this.usersRepository.save(user);
 
-    return { message: 'Email verified successfully' };
+    // Generate tokens so user is logged in after verification
+    const tokens = await this.generateTokens(user);
+    await this.updateRefreshToken(user.id, tokens.refresh_token);
+
+    return {
+      message: 'Email verified successfully',
+      user: this.sanitizeUser(user),
+      ...tokens,
+    };
   }
 
   // ─── SEND OTP (via MSG91 — phone) ─────────────────────
@@ -252,14 +341,18 @@ export class AuthService {
     }
 
     if (!user.otp || !user.otp_expires_at) {
-      throw new BadRequestException('No OTP requested. Please request a new OTP.');
+      throw new BadRequestException(
+        'No OTP requested. Please request a new OTP.',
+      );
     }
 
     if (new Date() > user.otp_expires_at) {
       user.otp = null;
       user.otp_expires_at = null;
       await this.usersRepository.save(user);
-      throw new BadRequestException('OTP has expired. Please request a new one.');
+      throw new BadRequestException(
+        'OTP has expired. Please request a new one.',
+      );
     }
 
     if (user.otp !== dto.otp) {
@@ -275,6 +368,7 @@ export class AuthService {
   }
 
   // ─── FORGOT PASSWORD ──────────────────────────────────
+  // Round A Fix #8: Rate limiting
   async forgotPassword(dto: ForgotPasswordDto) {
     const user = await this.usersRepository.findOne({
       where: { email: dto.email.toLowerCase() },
@@ -284,6 +378,9 @@ export class AuthService {
       return { message: 'If the email exists, a reset OTP has been sent' };
     }
 
+    // Rate limit check
+    checkOtpRateLimit(user.email);
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.otp = otp;
     user.otp_expires_at = new Date(Date.now() + 5 * 60 * 1000);
@@ -291,10 +388,40 @@ export class AuthService {
 
     // Send password reset OTP via email — don't block response
     this.sendOtpEmail(user.email, otp, 'password_reset').catch((err) => {
-      this.logger.error(`Failed to send reset email to ${user.email}: ${err.message}`);
+      this.logger.error(
+        `Failed to send reset email to ${user.email}: ${err.message}`,
+      );
     });
 
     return { message: 'If the email exists, a reset OTP has been sent' };
+  }
+
+  // ─── VERIFY FORGOT PASSWORD OTP (new endpoint) ─────────
+  // Round A Fix #6: Two-step forgot password — verify OTP first, then allow reset
+  async verifyForgotOtp(dto: { email: string; otp: string }) {
+    const user = await this.usersRepository.findOne({
+      where: { email: dto.email.toLowerCase() },
+    });
+
+    if (!user || !user.otp || !user.otp_expires_at) {
+      throw new BadRequestException('Invalid reset request');
+    }
+
+    if (new Date() > user.otp_expires_at) {
+      throw new BadRequestException('OTP expired');
+    }
+
+    if (user.otp !== dto.otp) {
+      throw new BadRequestException('Invalid OTP');
+    }
+
+    // OTP is valid — don't clear it yet, keep it for the reset step
+    // But mark a temporary flag so reset knows OTP was already verified
+    // We use a simple approach: keep the OTP alive for another 5 minutes
+    user.otp_expires_at = new Date(Date.now() + 5 * 60 * 1000);
+    await this.usersRepository.save(user);
+
+    return { message: 'OTP verified. You can now set a new password.', verified: true };
   }
 
   // ─── RESET PASSWORD ───────────────────────────────────
@@ -423,7 +550,9 @@ export class AuthService {
     type: 'email_verification' | 'password_reset',
   ) {
     if (!this.brevoApiKey) {
-      this.logger.warn(`BREVO_API_KEY not configured — OTP for ${email}: ${otp}`);
+      this.logger.warn(
+        `BREVO_API_KEY not configured — OTP for ${email}: ${otp}`,
+      );
       return;
     }
 
@@ -432,9 +561,7 @@ export class AuthService {
       ? 'Verify your CookOnCall account'
       : 'Reset your CookOnCall password';
 
-    const heading = isVerification
-      ? 'Verify Your Email'
-      : 'Reset Your Password';
+    const heading = isVerification ? 'Verify Your Email' : 'Reset Your Password';
 
     const message = isVerification
       ? 'Thank you for joining CookOnCall! Use the code below to verify your email address.'
@@ -481,9 +608,13 @@ export class AuthService {
       const result = await response.json();
 
       if (response.ok) {
-        this.logger.log(`OTP email sent to ${email} (${type}) — Brevo messageId: ${result.messageId}`);
+        this.logger.log(
+          `OTP email sent to ${email} (${type}) — Brevo messageId: ${result.messageId}`,
+        );
       } else {
-        this.logger.error(`Brevo API error for ${email}: ${JSON.stringify(result)}`);
+        this.logger.error(
+          `Brevo API error for ${email}: ${JSON.stringify(result)}`,
+        );
       }
     } catch (error) {
       this.logger.error(`Failed to send OTP email to ${email}`, error);
@@ -492,7 +623,12 @@ export class AuthService {
 
   private async verifyGoogleToken(
     token: string,
-  ): Promise<{ email: string; name: string; sub: string; picture?: string } | null> {
+  ): Promise<{
+    email: string;
+    name: string;
+    sub: string;
+    picture?: string;
+  } | null> {
     try {
       const response = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?id_token=${token}`,
