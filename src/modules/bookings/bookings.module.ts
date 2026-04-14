@@ -8,11 +8,12 @@ import { BookingsGateway } from './bookings.gateway';
 import { Booking } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
 import { User } from '../users/user.entity';
+import { MenuItem } from '../cooks/menu-item.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Booking, Cook, User]),
+    TypeOrmModule.forFeature([Booking, Cook, User, MenuItem]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

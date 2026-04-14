@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { Booking, BookingStatus, BookingType } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
 import { User } from '../users/user.entity';
+import { MenuItem } from '../cooks/menu-item.entity';
 import {
   CreateBookingDto,
   UpdateBookingStatusDto,
@@ -32,6 +33,8 @@ export class BookingsService {
     private cooksRepository: Repository<Cook>,
     @InjectRepository(User)
     private usersRepository: Repository<User>,
+    @InjectRepository(MenuItem)
+    private menuItemsRepository: Repository<MenuItem>,
     private notificationsService: NotificationsService,
     private configService: ConfigService,
   ) {
@@ -71,15 +74,49 @@ export class BookingsService {
     // Get customer info for notification
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 
-    // Calculate price
+    // ─── Calculate price based on selected menu items OR hourly rate ───
     let subtotal: number;
+    let orderItemsForDb: Record<string, any>[] | null = null;
+    let selectedDishNames: string[] = [];
 
-    if (dto.booking_type === BookingType.FOOD_DELIVERY && dto.order_items?.length) {
+    if (dto.selected_items && dto.selected_items.length > 0) {
+      // Fetch actual menu items from DB to get real prices (prevent tampering)
+      const menuItems = await this.menuItemsRepository.findBy(
+        dto.selected_items.map((si) => ({ id: si.menuItemId })),
+      );
+
+      const menuMap = new Map(menuItems.map((m) => [m.id, m]));
+
+      orderItemsForDb = dto.selected_items.map((si) => {
+        const item = menuMap.get(si.menuItemId);
+        if (!item) {
+          throw new BadRequestException(`Menu item ${si.menuItemId} not found`);
+        }
+        if (item.cook_id !== dto.cook_id) {
+          throw new BadRequestException(`Menu item ${item.name} does not belong to this chef`);
+        }
+        selectedDishNames.push(item.name);
+        return {
+          menuItemId: item.id,
+          name: item.name,
+          qty: si.qty || 1,
+          price: Number(item.price),
+        };
+      });
+
+      subtotal = orderItemsForDb.reduce(
+        (sum, item) => sum + item.price * item.qty,
+        0,
+      );
+    } else if (dto.order_items?.length) {
+      // Legacy: direct order_items from food delivery
       subtotal = dto.order_items.reduce(
         (sum, item) => sum + item.price * item.qty,
         0,
       );
+      orderItemsForDb = dto.order_items;
     } else {
+      // Hourly rate based
       const hours = dto.duration_hours || 2;
       subtotal = Number(cook.price_per_session) * hours;
     }
@@ -97,9 +134,11 @@ export class BookingsService {
       address: dto.address,
       latitude: dto.latitude,
       longitude: dto.longitude,
-      dishes: dto.dishes,
+      dishes: selectedDishNames.length > 0
+        ? selectedDishNames.join(', ')
+        : (dto.dishes || null),
       instructions: dto.instructions,
-      order_items: dto.order_items || null,
+      order_items: orderItemsForDb,
       subtotal,
       platform_fee: platformFee,
       total_price: totalPrice,
@@ -112,6 +151,24 @@ export class BookingsService {
     this.notificationsService
       .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
       .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+
+    // ─── SEND BOOKING RECEIPT EMAIL → customer ───
+    if (customer?.email) {
+      this.sendBookingReceiptEmail(
+        customer.email,
+        customer.name || 'Customer',
+        saved.id,
+        cook.user?.name || 'Your Chef',
+        scheduledDate,
+        dto.address,
+        selectedDishNames.length > 0 ? selectedDishNames : (dto.dishes ? dto.dishes.split(',').map(d => d.trim()) : []),
+        subtotal,
+        platformFee,
+        totalPrice,
+        dto.duration_hours || 2,
+        dto.guests || 2,
+      ).catch((err) => this.logger.warn(`Receipt email failed: ${err.message}`));
+    }
 
     return this.findById(saved.id);
   }
@@ -266,7 +323,7 @@ export class BookingsService {
             booking.actual_duration_minutes || 0,
           )
           .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
-        // ─── NOTIFY: Review prompt → customer (delayed) ───
+        // ─── NOTIFY: Review prompt → customer ───
         this.notificationsService
           .notifyReviewPrompt(
             booking.user_id,
@@ -608,6 +665,151 @@ export class BookingsService {
       }
     } catch (error) {
       this.logger.error(`Failed to send cooking OTP to ${email}`, error);
+    }
+  }
+
+  // ─── SEND BOOKING RECEIPT EMAIL (via Brevo) ───────────
+  private async sendBookingReceiptEmail(
+    email: string,
+    customerName: string,
+    bookingId: string,
+    chefName: string,
+    scheduledAt: Date,
+    address: string,
+    dishes: string[],
+    subtotal: number,
+    platformFee: number,
+    total: number,
+    durationHours: number,
+    guests: number,
+  ) {
+    if (!this.brevoApiKey) {
+      this.logger.warn(`BREVO_API_KEY not configured — skipping receipt email for ${email}`);
+      return;
+    }
+
+    const dateStr = scheduledAt.toLocaleDateString('en-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const timeStr = scheduledAt.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const dishListHtml = dishes.length > 0
+      ? dishes.map((d) => `<li style="padding: 4px 0; color: #5D4E37;">${d}</li>`).join('')
+      : '<li style="padding: 4px 0; color: #8B7355;">As discussed with chef</li>';
+
+    const shortId = bookingId.slice(0, 8).toUpperCase();
+
+    const html = `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+        </div>
+
+        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">Booking Confirmation</h2>
+        <p style="text-align: center; color: #8B7355; font-size: 14px; margin-bottom: 24px;">
+          Thank you, ${customerName}! Your booking has been placed.
+        </p>
+
+        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
+          <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355; width: 40%;">Booking ID</td>
+              <td style="padding: 8px 0; color: #2D1810; font-weight: 600;">#${shortId}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355;">Chef</td>
+              <td style="padding: 8px 0; color: #2D1810; font-weight: 600;">${chefName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355;">Date</td>
+              <td style="padding: 8px 0; color: #2D1810;">${dateStr}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355;">Time</td>
+              <td style="padding: 8px 0; color: #2D1810;">${timeStr}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355;">Duration</td>
+              <td style="padding: 8px 0; color: #2D1810;">${durationHours} hours</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355;">Guests</td>
+              <td style="padding: 8px 0; color: #2D1810;">${guests}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #8B7355; vertical-align: top;">Address</td>
+              <td style="padding: 8px 0; color: #2D1810;">${address}</td>
+            </tr>
+          </table>
+        </div>
+
+        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
+          <h3 style="color: #2D1810; font-size: 15px; margin: 0 0 12px;">Selected Dishes</h3>
+          <ul style="margin: 0; padding-left: 20px; font-size: 14px;">
+            ${dishListHtml}
+          </ul>
+        </div>
+
+        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 24px;">
+          <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 6px 0; color: #8B7355;">Subtotal</td>
+              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${subtotal.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #8B7355;">Platform Fee (15%)</td>
+              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${platformFee.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td colspan="2"><hr style="border: none; border-top: 1px dashed #FFE4B5; margin: 8px 0;" /></td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #2D1810; font-weight: 700; font-size: 16px;">Total</td>
+              <td style="padding: 6px 0; color: #D4721A; font-weight: 700; font-size: 16px; text-align: right;">&#8377;${total.toFixed(2)}</td>
+            </tr>
+          </table>
+        </div>
+
+        <p style="text-align: center; color: #8B7355; font-size: 13px; line-height: 1.6; margin-bottom: 16px;">
+          Your chef will be notified and will accept or decline your request shortly. You'll receive an email once confirmed.
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
+        <p style="text-align: center; color: #B0A090; font-size: 11px;">
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, India
+        </p>
+      </div>
+    `;
+
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': this.brevoApiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: 'CookOnCall', email: 'aryankhamar20@gmail.com' },
+          to: [{ email }],
+          subject: `Booking Confirmed — #${shortId} | CookOnCall`,
+          htmlContent: html,
+        }),
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        this.logger.log(`Booking receipt sent to ${email} — bookingId: ${bookingId}`);
+      } else {
+        this.logger.error(`Brevo error for receipt: ${JSON.stringify(result)}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to send booking receipt to ${email}`, error);
     }
   }
 }

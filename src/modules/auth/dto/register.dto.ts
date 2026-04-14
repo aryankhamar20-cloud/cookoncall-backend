@@ -30,6 +30,11 @@ export class RegisterDto {
   @IsOptional()
   role?: UserRole;
 
+  // ─── Address (optional at registration, mandatory at booking) ───
+  @IsOptional()
+  @IsString()
+  address?: string;
+
   // ─── Chef-only fields (optional, used when role = cook) ───
   @IsOptional()
   @IsString()

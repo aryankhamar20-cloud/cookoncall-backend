@@ -48,6 +48,16 @@ export class User {
   @Column({ nullable: true })
   google_id: string;
 
+  // ─── ADDRESS & GEOLOCATION ─────────────────────────────
+  @Column({ type: 'text', nullable: true })
+  address: string;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  latitude: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  longitude: number;
+
   @Exclude()
   @Column({ nullable: true })
   refresh_token: string;

@@ -29,6 +29,17 @@ export class OrderItemDto {
   price: number;
 }
 
+// New: for menu checkbox selection during booking
+export class SelectedItemDto {
+  @IsUUID()
+  menuItemId: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  qty?: number; // defaults to 1
+}
+
 export class CreateBookingDto {
   @IsUUID()
   cook_id: string;
@@ -74,7 +85,14 @@ export class CreateBookingDto {
   @IsString()
   instructions?: string;
 
-  // For food delivery orders
+  // New: customer selects dishes from chef's menu via checkboxes
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SelectedItemDto)
+  selected_items?: SelectedItemDto[];
+
+  // Legacy: for food delivery orders
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
