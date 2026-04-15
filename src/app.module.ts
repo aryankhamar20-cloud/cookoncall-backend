@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { BullModule } from '@nestjs/bull';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './modules/auth/auth.module';
@@ -30,11 +31,20 @@ import { redisConfig } from './config/redis.config';
       useFactory: databaseConfig,
     }),
 
-    // Rate limiting — 100 requests per 60 seconds per IP
+    // Rate limiting
+    // General: 100 requests per 60s per IP (all endpoints)
+    // Strict:  10 requests per 60s per IP (auth endpoints — login, register, OTP)
+    // The auth controller uses @Throttle({ strict: [...] }) to apply the strict tier
     ThrottlerModule.forRoot([
       {
-        ttl: 60000,
+        name: 'general',
+        ttl: 60000,  // 60 seconds
         limit: 100,
+      },
+      {
+        name: 'strict',
+        ttl: 60000,  // 60 seconds
+        limit: 10,
       },
     ]),
 
@@ -57,6 +67,15 @@ import { redisConfig } from './config/redis.config';
     NotificationsModule,
     AdminModule,
     UploadsModule,
+  ],
+  providers: [
+    // Apply ThrottlerGuard globally to ALL endpoints
+    // Individual controllers/routes can use @SkipThrottle() to opt out
+    // or @Throttle({ strict: [...] }) to use stricter limits
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

@@ -3,19 +3,8 @@
  * Runs on every app startup. Idempotent: creates admin accounts if they don't
  * already exist, otherwise logs "already exists" and does nothing.
  *
- * This is the ONLY safe way to create admin accounts in this codebase, because
- * the public /auth/register endpoint forces role to "user" or "cook" and
- * rejects any attempt to register as admin.
- *
- * To add, remove, or change an admin:
- *   1. Edit the ADMINS array below.
- *   2. Commit and push. Railway auto-deploys. On the next restart the new
- *      admin(s) are inserted. Existing admins are left untouched.
- *
- * To rotate a password:
- *   1. Delete the user row from Supabase, update the password below, commit,
- *      push. On the next restart the account is re-created with the new
- *      password. (Or build a proper "change password" endpoint later.)
+ * To add/remove an admin: edit the ADMINS array, commit, push.
+ * To rotate a password: delete the user row in Supabase, update below, push.
  */
 
 import { DataSource } from 'typeorm';
@@ -49,20 +38,27 @@ export async function seedAdmins(dataSource: DataSource): Promise<void> {
 
     try {
       const existing = await dataSource.query(
-        `SELECT id, role FROM users WHERE email = $1 LIMIT 1`,
+        `SELECT id, role, email_verified FROM users WHERE email = $1 LIMIT 1`,
         [email],
       );
 
       if (existing.length > 0) {
-        // If the account exists but somehow isn't admin, promote it.
-        if (existing[0].role !== 'admin') {
+        const user = existing[0];
+        const needsUpdate = user.role !== 'admin' || !user.email_verified;
+
+        if (needsUpdate) {
           await dataSource.query(
-            `UPDATE users SET role = 'admin', is_active = true, updated_at = NOW() WHERE id = $1`,
-            [existing[0].id],
+            `UPDATE users
+             SET role = 'admin',
+                 is_active = true,
+                 email_verified = true,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [user.id],
           );
-          logger.log(`Promoted existing account to admin: ${email}`);
+          logger.log(`Updated admin account (role + email_verified): ${email}`);
         } else {
-          logger.log(`Admin already exists, skipping: ${email}`);
+          logger.log(`Admin already exists and is correct, skipping: ${email}`);
         }
         continue;
       }
@@ -71,15 +67,14 @@ export async function seedAdmins(dataSource: DataSource): Promise<void> {
 
       await dataSource.query(
         `INSERT INTO users
-           (id, name, email, password, role, phone_verified, is_active, created_at, updated_at)
+           (id, name, email, password, role, email_verified, phone_verified, is_active, created_at, updated_at)
          VALUES
-           (gen_random_uuid(), $1, $2, $3, 'admin', true, true, NOW(), NOW())`,
+           (gen_random_uuid(), $1, $2, $3, 'admin', true, true, true, NOW(), NOW())`,
         [admin.name, email, hashedPassword],
       );
 
       logger.log(`Created admin account: ${email}`);
     } catch (err) {
-      // Never crash the app because of a seed failure.
       logger.error(
         `Failed to seed admin ${email}: ${(err as Error).message}`,
       );
