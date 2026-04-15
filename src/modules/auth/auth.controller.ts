@@ -29,18 +29,16 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   // ─── REGISTER ─────────────────────────────────────────────────────────────
-  // Strict: max 10 register attempts per 60s per IP
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
   // ─── LOGIN ────────────────────────────────────────────────────────────────
-  // Strict: max 10 login attempts per 60s per IP (prevents brute-force)
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto) {
@@ -49,7 +47,7 @@ export class AuthController {
 
   // ─── GOOGLE OAUTH ─────────────────────────────────────────────────────────
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('google')
   @HttpCode(HttpStatus.OK)
   async googleAuth(@Body() dto: GoogleAuthDto) {
@@ -57,9 +55,8 @@ export class AuthController {
   }
 
   // ─── SEND OTP (phone) ─────────────────────────────────────────────────────
-  // Very strict: max 5 per 60s per IP (SMS costs money and can be abused)
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 5 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 5 } })
   @Post('send-otp')
   @HttpCode(HttpStatus.OK)
   async sendOtp(@Body() dto: SendOtpDto) {
@@ -68,7 +65,7 @@ export class AuthController {
 
   // ─── VERIFY OTP (phone) ───────────────────────────────────────────────────
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('verify-otp')
   @HttpCode(HttpStatus.OK)
   async verifyOtp(@Body() dto: VerifyOtpDto) {
@@ -76,9 +73,8 @@ export class AuthController {
   }
 
   // ─── SEND EMAIL OTP ───────────────────────────────────────────────────────
-  // Very strict: max 5 per 60s per IP (protects Brevo 300/day free limit)
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 5 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 5 } })
   @Post('send-email-otp')
   @HttpCode(HttpStatus.OK)
   async sendEmailOtp(@Body() dto: SendEmailOtpDto) {
@@ -87,7 +83,7 @@ export class AuthController {
 
   // ─── VERIFY EMAIL OTP ─────────────────────────────────────────────────────
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('verify-email-otp')
   @HttpCode(HttpStatus.OK)
   async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto) {
@@ -95,9 +91,8 @@ export class AuthController {
   }
 
   // ─── FORGOT PASSWORD ──────────────────────────────────────────────────────
-  // Very strict: max 5 per 60s per IP
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 5 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 5 } })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
@@ -106,7 +101,7 @@ export class AuthController {
 
   // ─── VERIFY FORGOT PASSWORD OTP ───────────────────────────────────────────
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('verify-forgot-otp')
   @HttpCode(HttpStatus.OK)
   async verifyForgotOtp(@Body() dto: { email: string; otp: string }) {
@@ -115,7 +110,7 @@ export class AuthController {
 
   // ─── RESET PASSWORD ───────────────────────────────────────────────────────
   @Public()
-  @Throttle({ strict: [{ ttl: 60000, limit: 10 }] })
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   async resetPassword(@Body() dto: ResetPasswordDto) {
@@ -123,7 +118,6 @@ export class AuthController {
   }
 
   // ─── REFRESH TOKEN ────────────────────────────────────────────────────────
-  // Skip throttle — happens automatically in the background every 15 min
   @Public()
   @SkipThrottle()
   @Post('refresh')
@@ -140,7 +134,6 @@ export class AuthController {
   }
 
   // ─── GET CURRENT USER ─────────────────────────────────────────────────────
-  // Skip throttle — called frequently by frontend to check auth state
   @SkipThrottle()
   @Get('me')
   async getMe(@CurrentUser() user: User) {
