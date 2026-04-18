@@ -14,6 +14,7 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
+import { AddressesModule } from './modules/addresses/addresses.module';
 import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
 
@@ -67,6 +68,7 @@ import { redisConfig } from './config/redis.config';
     NotificationsModule,
     AdminModule,
     UploadsModule,
+    AddressesModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints
