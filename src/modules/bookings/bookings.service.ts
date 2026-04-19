@@ -80,10 +80,16 @@ export class BookingsService {
     // Get customer info for notification
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 
-    // ─── Calculate price based on selected menu items OR hourly rate ───
+    // ─── Calculate subtotal from selected menu items (Batch B1) ────────────
+    // Hourly fallback was removed in Batch B1 — the /pricing page never
+    // advertised hourly billing, so the backend must never charge it either.
+    // Customer is required to pick at least one dish; frontend BookingModal
+    // enforces this too. If somehow a zero-dish payload still reaches here
+    // (e.g. old mobile cache), we fail loud with a 400 rather than charging
+    // a NaN amount via Razorpay.
     let subtotal: number;
     let orderItemsForDb: Record<string, any>[] | null = null;
-    let selectedDishNames: string[] = [];
+    const selectedDishNames: string[] = [];
 
     if (dto.selected_items && dto.selected_items.length > 0) {
       // Fetch actual menu items from DB to get real prices (prevent tampering)
@@ -115,16 +121,23 @@ export class BookingsService {
         0,
       );
     } else if (dto.order_items?.length) {
-      // Legacy: direct order_items from food delivery
+      // Food-delivery flow (OrderFoodPanel / CartDrawer) — kept as-is.
       subtotal = dto.order_items.reduce(
         (sum, item) => sum + item.price * item.qty,
         0,
       );
       orderItemsForDb = dto.order_items;
     } else {
-      // Hourly rate based
-      const hours = dto.duration_hours || 2;
-      subtotal = Number(cook.price_per_session) * hours;
+      // Zero-dish safeguard — should never hit because frontend blocks it.
+      throw new BadRequestException(
+        'Please select at least one dish from the chef\'s menu before booking.',
+      );
+    }
+
+    if (!subtotal || subtotal <= 0 || Number.isNaN(subtotal)) {
+      throw new BadRequestException(
+        'Booking subtotal must be greater than zero. Please select at least one dish.',
+      );
     }
 
     // ─── New pricing (matches public /pricing page + BookingModal exactly) ──

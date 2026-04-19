@@ -125,7 +125,11 @@ export class AuthService {
         cuisines: dto.specialties
           ? dto.specialties.split(',').map((s) => s.trim())
           : [],
-        price_per_session: dto.rate || 200,
+        // Batch B1: price_per_session is no longer read by the booking flow
+        // (hourly fallback removed — customers must pick dishes). Kept as a
+        // non-zero placeholder so legacy code paths + admin displays don't
+        // divide-by-zero. Real revenue comes from ₹49 visit fee + 2.5% conv. fee.
+        price_per_session: dto.rate || 49,
         bio: dto.experience || null,
       });
       await this.cooksRepository.save(cookProfile);
