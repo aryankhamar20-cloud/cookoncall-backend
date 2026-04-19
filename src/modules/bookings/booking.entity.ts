@@ -96,6 +96,15 @@ export class Booking {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   total_price: number;
 
+  // ─── LAUNCH PRICING (Apr 19, 2026) ───────────────────
+  // visit_fee: ₹49 flat for home cooking, 0 for food delivery
+  // platform_fee_percent: 2.5 (charged to customer); chef pays separate 2.5% on payout
+  @Column({ type: 'int', default: 49 })
+  visit_fee: number;
+
+  @Column({ type: 'decimal', precision: 4, scale: 2, default: 2.5 })
+  platform_fee_percent: number;
+
   @Column({ type: 'text', nullable: true })
   cancellation_reason: string;
 

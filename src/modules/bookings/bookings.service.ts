@@ -19,7 +19,13 @@ import {
 } from './dto/booking.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
-const PLATFORM_FEE_PERCENT = 0.15; // 15%
+// ─── Pricing model (Apr 19, 2026 launch) ────────────────────────────────
+// HOME_COOKING: ₹49 flat visit fee + 2.5% convenience fee (paid by customer).
+//   Chef separately pays a 2.5% platform cut out of dish price (handled at payout).
+// FOOD_DELIVERY: visit fee = 0 (delivery has its own delivery-fee model).
+// These constants MUST match the public /pricing page numbers.
+const VISIT_FEE_HOME_COOKING = 49;
+const CONVENIENCE_RATE = 0.025; // 2.5% paid by customer
 
 @Injectable()
 export class BookingsService {
@@ -121,13 +127,21 @@ export class BookingsService {
       subtotal = Number(cook.price_per_session) * hours;
     }
 
-    const platformFee = Math.round(subtotal * PLATFORM_FEE_PERCENT * 100) / 100;
-    const totalPrice = subtotal + platformFee;
+    // ─── New pricing (matches public /pricing page + BookingModal exactly) ──
+    const bookingType = dto.booking_type || BookingType.HOME_COOKING;
+    const visitFee =
+      bookingType === BookingType.HOME_COOKING ? VISIT_FEE_HOME_COOKING : 0;
+    // Round convenience fee to nearest rupee so customer never sees ₹11.75.
+    const convenienceFee = Math.round(subtotal * CONVENIENCE_RATE);
+    // Kept name `platformFee` for backward compatibility with the existing
+    // bookings.platform_fee column and downstream notification helpers.
+    const platformFee = convenienceFee;
+    const totalPrice = subtotal + visitFee + convenienceFee;
 
     const booking = this.bookingsRepository.create({
       user_id: userId,
       cook_id: dto.cook_id,
-      booking_type: dto.booking_type || BookingType.HOME_COOKING,
+      booking_type: bookingType,
       scheduled_at: scheduledDate,
       duration_hours: dto.duration_hours || 2,
       guests: dto.guests || 2,
@@ -143,6 +157,9 @@ export class BookingsService {
       platform_fee: platformFee,
       total_price: totalPrice,
       status: BookingStatus.PENDING,
+      // New launch-pricing columns (added via Apr 19 SQL migration):
+      visit_fee: visitFee,
+      platform_fee_percent: 2.5,
     });
 
     const saved = await this.bookingsRepository.save(booking);
@@ -163,6 +180,7 @@ export class BookingsService {
         dto.address,
         selectedDishNames.length > 0 ? selectedDishNames : (dto.dishes ? dto.dishes.split(',').map(d => d.trim()) : []),
         subtotal,
+        visitFee,
         platformFee,
         totalPrice,
         dto.duration_hours || 2,
@@ -582,16 +600,26 @@ export class BookingsService {
     }
   }
 
-  // ─── CANCELLATION REFUND CALCULATION ──────────────────
-  // Policy: 4+ hours = full refund, 2-4 hours = 50%, <2 hours = no refund
-  // Chef cancels = always full refund
+  // ─── CANCELLATION REFUND CALCULATION (Apr 19 launch policy) ──────────
+  // Customer cancels:
+  //   - 2+ hours before slot: 80% of DISH amount refunded; visit fee non-refundable
+  //   - <2 hours before slot: no refund
+  // Chef cancels (handled in cancel flow): always full refund of total_price
+  // Pending status (chef hasn't confirmed yet): always full refund (caller decides)
+  // Source of truth: public /refund page.
   getCancellationRefund(booking: Booking): number {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
 
-    if (hoursUntil >= 4) return Number(booking.total_price); // Full refund
-    if (hoursUntil >= 2) return Number(booking.total_price) * 0.5; // 50% refund
-    return 0; // No refund within 2 hours
+    const total = Number(booking.total_price);
+    const visitFee = Number(booking.visit_fee || 0);
+    const dishAmount = Math.max(total - visitFee, 0);
+
+    if (hoursUntil >= 2) {
+      // 80% of dish amount; visit fee retained
+      return Math.round(dishAmount * 0.8 * 100) / 100;
+    }
+    return 0;
   }
 
   // ─── SEND COOKING OTP EMAIL (via Brevo) ───────────────
@@ -637,7 +665,7 @@ export class BookingsService {
         </p>
         <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
         <p style="text-align: center; color: #B0A090; font-size: 11px;">
-          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, India
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India
         </p>
       </div>
     `;
@@ -678,6 +706,7 @@ export class BookingsService {
     address: string,
     dishes: string[],
     subtotal: number,
+    visitFee: number,
     platformFee: number,
     total: number,
     durationHours: number,
@@ -762,8 +791,13 @@ export class BookingsService {
               <td style="padding: 6px 0; color: #8B7355;">Subtotal</td>
               <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${subtotal.toFixed(2)}</td>
             </tr>
+            ${visitFee > 0 ? `
             <tr>
-              <td style="padding: 6px 0; color: #8B7355;">Platform Fee (15%)</td>
+              <td style="padding: 6px 0; color: #8B7355;">Visit fee</td>
+              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${visitFee.toFixed(2)}</td>
+            </tr>` : ''}
+            <tr>
+              <td style="padding: 6px 0; color: #8B7355;">Convenience fee (2.5%)</td>
               <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${platformFee.toFixed(2)}</td>
             </tr>
             <tr>
@@ -772,6 +806,9 @@ export class BookingsService {
             <tr>
               <td style="padding: 6px 0; color: #2D1810; font-weight: 700; font-size: 16px;">Total</td>
               <td style="padding: 6px 0; color: #D4721A; font-weight: 700; font-size: 16px; text-align: right;">&#8377;${total.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td colspan="2" style="padding: 6px 0; color: #8B7355; font-size: 11px; font-style: italic;">+ Ingredients at actual market cost (with receipt)</td>
             </tr>
           </table>
         </div>
@@ -782,7 +819,7 @@ export class BookingsService {
 
         <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
         <p style="text-align: center; color: #B0A090; font-size: 11px;">
-          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, India
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India
         </p>
       </div>
     `;
