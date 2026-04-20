@@ -125,11 +125,11 @@ export class AuthService {
         cuisines: dto.specialties
           ? dto.specialties.split(',').map((s) => s.trim())
           : [],
-        // Batch B1: price_per_session is no longer read by the booking flow
-        // (hourly fallback removed — customers must pick dishes). Kept as a
-        // non-zero placeholder so legacy code paths + admin displays don't
-        // divide-by-zero. Real revenue comes from ₹49 visit fee + 2.5% conv. fee.
-        price_per_session: dto.rate || 49,
+        // Batch B2: price_per_session fully removed from booking/earnings logic.
+        // DB column retained with default 49 (cook.entity.ts) for rollback safety.
+        // All chef revenue comes from per-dish menu prices (97.5% net to chef).
+        // Platform revenue = ₹49 visit fee + 2.5% convenience fee from customer
+        // + 2.5% deducted from chef payout on dishes.
         bio: dto.experience || null,
       });
       await this.cooksRepository.save(cookProfile);

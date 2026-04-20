@@ -37,11 +37,8 @@ export class CreateCookProfileDto {
   @IsString({ each: true })
   cuisines: string[];
 
-  @IsNumber()
-  @Min(50)
-  @Max(10000)
-  @Type(() => Number)
-  price_per_session: number;
+  // Batch B2: price_per_session removed from DTO. Flat ₹49 visit fee model.
+  // DB column retained with default 49 for rollback safety.
 
   @IsOptional()
   @IsBoolean()
@@ -74,12 +71,7 @@ export class UpdateCookProfileDto {
   @IsString({ each: true })
   cuisines?: string[];
 
-  @IsOptional()
-  @IsNumber()
-  @Min(50)
-  @Max(10000)
-  @Type(() => Number)
-  price_per_session?: number;
+  // Batch B2: price_per_session removed from update DTO.
 
   @IsOptional()
   @IsBoolean()
@@ -222,15 +214,7 @@ export class SearchCooksDto {
   @Type(() => Boolean)
   veg_only?: boolean;
 
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  min_price?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  max_price?: number;
+  // Batch B2: min_price / max_price removed from search DTO. Flat ₹49 visit fee model.
 
   @IsOptional()
   @IsNumber()
@@ -239,7 +223,7 @@ export class SearchCooksDto {
 
   @IsOptional()
   @IsString()
-  sort_by?: string; // 'rating' | 'price_asc' | 'price_desc' | 'bookings'
+  sort_by?: string; // 'rating' | 'bookings'
 
   @IsOptional()
   @IsNumber()

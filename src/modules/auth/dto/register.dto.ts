@@ -2,7 +2,6 @@ import {
   IsEmail,
   IsEnum,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   Matches,
@@ -44,7 +43,5 @@ export class RegisterDto {
   @IsString()
   experience?: string;
 
-  @IsOptional()
-  @IsNumber()
-  rate?: number;
+  // Batch B2: rate field removed from register DTO. Flat ₹49 visit fee model.
 }

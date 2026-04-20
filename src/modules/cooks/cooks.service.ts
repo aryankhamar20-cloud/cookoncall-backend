@@ -165,13 +165,7 @@ export class CooksService {
       qb.andWhere('c.is_veg_only = true');
     }
 
-    if (dto.min_price) {
-      qb.andWhere('c.price_per_session >= :minPrice', { minPrice: dto.min_price });
-    }
-
-    if (dto.max_price) {
-      qb.andWhere('c.price_per_session <= :maxPrice', { maxPrice: dto.max_price });
-    }
+    // Batch B2: min_price / max_price filters removed. Flat ₹49 visit fee model.
 
     if (dto.min_rating) {
       qb.andWhere('c.rating >= :minRating', { minRating: dto.min_rating });
@@ -179,12 +173,6 @@ export class CooksService {
 
     // Sorting
     switch (dto.sort_by) {
-      case 'price_asc':
-        qb.orderBy('c.price_per_session', 'ASC');
-        break;
-      case 'price_desc':
-        qb.orderBy('c.price_per_session', 'DESC');
-        break;
       case 'rating':
         qb.orderBy('c.rating', 'DESC');
         break;
