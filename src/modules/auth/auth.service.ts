@@ -602,7 +602,7 @@ export class AuthService {
           'api-key': this.brevoApiKey,
         },
         body: JSON.stringify({
-          sender: { name: 'CookOnCall', email: 'aryankhamar20@gmail.com' },
+          sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
           to: [{ email }],
           subject,
           htmlContent: html,
