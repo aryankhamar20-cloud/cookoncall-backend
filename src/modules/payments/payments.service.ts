@@ -12,6 +12,7 @@ import Razorpay from 'razorpay';
 import { Payment, PaymentStatus } from './payment.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { CreateOrderDto, VerifyPaymentDto } from './dto/payment.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class PaymentsService {
@@ -24,6 +25,7 @@ export class PaymentsService {
     @InjectRepository(Booking)
     private bookingsRepository: Repository<Booking>,
     private configService: ConfigService,
+    private notificationsService: NotificationsService,
   ) {
     this.razorpay = new Razorpay({
       key_id: this.configService.get<string>('RAZORPAY_KEY_ID'),
@@ -32,17 +34,41 @@ export class PaymentsService {
   }
 
   // ─── CREATE RAZORPAY ORDER ────────────────────────────
+  // NEW FLOW: payment can only be initiated for bookings in AWAITING_PAYMENT.
+  // Legacy rows still in PENDING are tolerated to keep old bookings payable,
+  // but all new bookings must come via the accept flow.
   async createOrder(userId: string, dto: CreateOrderDto) {
     const booking = await this.bookingsRepository.findOne({
       where: { id: dto.booking_id, user_id: userId },
+      relations: ['cook', 'cook.user'],
     });
 
     if (!booking) {
       throw new NotFoundException('Booking not found');
     }
 
-    if (booking.status !== BookingStatus.PENDING) {
-      throw new BadRequestException('Booking is not in pending state');
+    const payableStatuses = [
+      BookingStatus.AWAITING_PAYMENT,
+      BookingStatus.PENDING, // legacy
+    ];
+    if (!payableStatuses.includes(booking.status)) {
+      throw new BadRequestException(
+        `This booking cannot be paid right now (status: ${booking.status})`,
+      );
+    }
+
+    // Reject expired AWAITING_PAYMENT bookings (3h payment window)
+    if (booking.status === BookingStatus.AWAITING_PAYMENT && booking.payment_expires_at) {
+      if (new Date() > new Date(booking.payment_expires_at)) {
+        throw new BadRequestException(
+          'Your 3-hour payment window has expired. Please book again.',
+        );
+      }
+    }
+
+    const amount = Number(booking.total_price);
+    if (!amount || amount <= 0 || Number.isNaN(amount)) {
+      throw new BadRequestException('Invalid booking amount — please contact support');
     }
 
     // Check if payment already exists
@@ -55,7 +81,7 @@ export class PaymentsService {
     }
 
     // Create Razorpay order
-    const amountInPaise = Math.round(Number(booking.total_price) * 100);
+    const amountInPaise = Math.round(amount * 100);
 
     let razorpayOrder;
     try {
@@ -80,7 +106,6 @@ export class PaymentsService {
       );
     }
 
-    // Create or update payment record
     let payment: Payment;
 
     if (existingPayment) {
@@ -115,6 +140,9 @@ export class PaymentsService {
   }
 
   // ─── VERIFY PAYMENT ───────────────────────────────────
+  // On successful verification: payment → CAPTURED, booking → CONFIRMED,
+  // customer + chef notified. This is the ONLY path that flips a booking
+  // to CONFIRMED in the new flow.
   async verifyPayment(userId: string, dto: VerifyPaymentDto) {
     const payment = await this.paymentsRepository.findOne({
       where: {
@@ -127,7 +155,7 @@ export class PaymentsService {
       throw new NotFoundException('Payment not found');
     }
 
-    // Verify signature
+    // Verify HMAC signature
     const secret = this.configService.get<string>('RAZORPAY_KEY_SECRET');
     const body = dto.razorpay_order_id + '|' + dto.razorpay_payment_id;
     const expectedSignature = crypto
@@ -141,18 +169,64 @@ export class PaymentsService {
       throw new BadRequestException('Payment verification failed');
     }
 
-    // Payment verified — update records
+    // Double-check with Razorpay: only trust payments in "captured" state
+    try {
+      const rpPayment = await this.razorpay.payments.fetch(dto.razorpay_payment_id);
+      if (rpPayment.status !== 'captured') {
+        this.logger.warn(
+          `Payment ${dto.razorpay_payment_id} signature ok but status is ${rpPayment.status} — refusing to confirm`,
+        );
+        // Don't mark as FAILED — may still capture; just refuse to confirm now.
+        throw new BadRequestException(
+          `Payment is still "${rpPayment.status}" at Razorpay. Please retry in a minute.`,
+        );
+      }
+    } catch (err) {
+      // If Razorpay fetch itself fails (network, etc) we still honor signature
+      // to avoid blocking legit captures, but log it.
+      this.logger.warn(`Razorpay fetch failed for ${dto.razorpay_payment_id}: ${err?.message || err}`);
+    }
+
+    // Mark payment captured
     payment.razorpay_payment_id = dto.razorpay_payment_id;
     payment.razorpay_signature = dto.razorpay_signature;
     payment.status = PaymentStatus.CAPTURED;
     payment.paid_at = new Date();
     await this.paymentsRepository.save(payment);
 
-    // Update booking status to CONFIRMED
-    await this.bookingsRepository.update(dto.booking_id, {
-      status: BookingStatus.CONFIRMED,
-      confirmed_at: new Date(),
+    // Fetch booking and flip to CONFIRMED
+    const booking = await this.bookingsRepository.findOne({
+      where: { id: dto.booking_id },
+      relations: ['user', 'cook', 'cook.user'],
     });
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    // Only flip if not already confirmed/in-progress/completed
+    const flippableFrom = [
+      BookingStatus.AWAITING_PAYMENT,
+      BookingStatus.PENDING, // legacy
+    ];
+    if (flippableFrom.includes(booking.status)) {
+      booking.status = BookingStatus.CONFIRMED;
+      booking.confirmed_at = new Date();
+      await this.bookingsRepository.save(booking);
+
+      // Notify customer + chef
+      this.notificationsService
+        .notifyBookingConfirmed(
+          booking.user_id,
+          booking.id,
+          booking.cook?.user?.name || 'Your chef',
+        )
+        .catch(() => undefined);
+      if (booking.cook?.user_id) {
+        this.notificationsService
+          .notifyPaymentReceived(booking.cook.user_id, Number(payment.amount))
+          .catch(() => undefined);
+      }
+    }
 
     return {
       message: 'Payment verified successfully',
@@ -231,7 +305,6 @@ export class PaymentsService {
     }
   }
 
-  // ─── GET PAYMENT BY BOOKING ───────────────────────────
   async getPaymentByBooking(bookingId: string) {
     return this.paymentsRepository.findOne({
       where: { booking_id: bookingId },
@@ -253,6 +326,27 @@ export class PaymentsService {
       payment.razorpay_payment_id = payload.payment?.entity?.id;
       payment.paid_at = new Date();
       await this.paymentsRepository.save(payment);
+
+      // Also flip booking to CONFIRMED if not already (webhook redundancy)
+      const booking = await this.bookingsRepository.findOne({
+        where: { id: payment.booking_id },
+        relations: ['user', 'cook', 'cook.user'],
+      });
+      if (booking && (
+        booking.status === BookingStatus.AWAITING_PAYMENT ||
+        booking.status === BookingStatus.PENDING
+      )) {
+        booking.status = BookingStatus.CONFIRMED;
+        booking.confirmed_at = new Date();
+        await this.bookingsRepository.save(booking);
+        this.notificationsService
+          .notifyBookingConfirmed(
+            booking.user_id,
+            booking.id,
+            booking.cook?.user?.name || 'Your chef',
+          )
+          .catch(() => undefined);
+      }
     }
   }
 

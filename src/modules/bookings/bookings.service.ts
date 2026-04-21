@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Booking, BookingStatus, BookingType } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
@@ -16,17 +16,28 @@ import {
   CreateBookingDto,
   UpdateBookingStatusDto,
   GetBookingsDto,
+  RejectBookingDto,
+  RebookDto,
 } from './dto/booking.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 
 // ─── Pricing model (Apr 19, 2026 launch) ────────────────────────────────
-// HOME_COOKING: ₹49 flat visit fee + 2.5% convenience fee (paid by customer).
-//   Chef separately pays a 2.5% platform cut out of dish price (handled at payout).
-// FOOD_DELIVERY: visit fee = 0 (delivery has its own delivery-fee model).
-// These constants MUST match the public /pricing page numbers.
 const VISIT_FEE_HOME_COOKING = 49;
-const CONVENIENCE_RATE = 0.025; // 2.5% paid by customer
+const CONVENIENCE_RATE = 0.025;
+
+// ─── NEW FLOW TIMING (Apr 21, 2026) ─────────────────────────────────────
+// Both windows are 3 hours. On-demand check — no background job.
+const CHEF_APPROVAL_WINDOW_MS = 3 * 60 * 60 * 1000;
+const PAYMENT_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+// Statuses that are eligible for the on-demand expiry sweep.
+const EXPIRABLE_STATUSES: BookingStatus[] = [
+  BookingStatus.PENDING_CHEF_APPROVAL,
+  BookingStatus.AWAITING_PAYMENT,
+  // Legacy rows created before Apr 21 migration — treated same as PENDING_CHEF_APPROVAL.
+  BookingStatus.PENDING,
+];
 
 @Injectable()
 export class BookingsService {
@@ -69,33 +80,23 @@ export class BookingsService {
       throw new BadRequestException('Cook is currently unavailable');
     }
 
-    // Prevent self-booking
     if (cook.user_id === userId) {
       throw new BadRequestException('You cannot book yourself');
     }
 
-    // Check scheduled date is in the future
     const scheduledDate = new Date(dto.scheduled_at);
     if (scheduledDate <= new Date()) {
       throw new BadRequestException('Scheduled date must be in the future');
     }
 
-    // Get customer info for notification
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 
-    // ─── Calculate subtotal from selected menu items (Batch B1) ────────────
-    // Hourly fallback was removed in Batch B1 — the /pricing page never
-    // advertised hourly billing, so the backend must never charge it either.
-    // Customer is required to pick at least one dish; frontend BookingModal
-    // enforces this too. If somehow a zero-dish payload still reaches here
-    // (e.g. old mobile cache), we fail loud with a 400 rather than charging
-    // a NaN amount via Razorpay.
+    // ─── Calculate subtotal from selected menu items ──────────────────────
     let subtotal: number;
     let orderItemsForDb: Record<string, any>[] | null = null;
     const selectedDishNames: string[] = [];
 
     if (dto.selected_items && dto.selected_items.length > 0) {
-      // Fetch actual menu items from DB to get real prices (prevent tampering)
       const menuItems = await this.menuItemsRepository.findBy(
         dto.selected_items.map((si) => ({ id: si.menuItemId })),
       );
@@ -124,16 +125,14 @@ export class BookingsService {
         0,
       );
     } else if (dto.order_items?.length) {
-      // Food-delivery flow (OrderFoodPanel / CartDrawer) — kept as-is.
       subtotal = dto.order_items.reduce(
         (sum, item) => sum + item.price * item.qty,
         0,
       );
       orderItemsForDb = dto.order_items;
     } else {
-      // Zero-dish safeguard — should never hit because frontend blocks it.
       throw new BadRequestException(
-        'Please select at least one dish from the chef\'s menu before booking.',
+        "Please select at least one dish from the chef's menu before booking.",
       );
     }
 
@@ -143,14 +142,10 @@ export class BookingsService {
       );
     }
 
-    // ─── New pricing (matches public /pricing page + BookingModal exactly) ──
     const bookingType = dto.booking_type || BookingType.HOME_COOKING;
     const visitFee =
       bookingType === BookingType.HOME_COOKING ? VISIT_FEE_HOME_COOKING : 0;
-    // Round convenience fee to nearest rupee so customer never sees ₹11.75.
     const convenienceFee = Math.round(subtotal * CONVENIENCE_RATE);
-    // Kept name `platformFee` for backward compatibility with the existing
-    // bookings.platform_fee column and downstream notification helpers.
     const platformFee = convenienceFee;
     const totalPrice = subtotal + visitFee + convenienceFee;
 
@@ -172,8 +167,8 @@ export class BookingsService {
       subtotal,
       platform_fee: platformFee,
       total_price: totalPrice,
-      status: BookingStatus.PENDING,
-      // New launch-pricing columns (added via Apr 19 SQL migration):
+      // ─── NEW FLOW: customer books → chef must accept first ──
+      status: BookingStatus.PENDING_CHEF_APPROVAL,
       visit_fee: visitFee,
       platform_fee_percent: 2.5,
     });
@@ -209,6 +204,9 @@ export class BookingsService {
 
   // ─── GET USER BOOKINGS ────────────────────────────────
   async getUserBookings(userId: string, dto: GetBookingsDto) {
+    // On-demand expiry pass BEFORE reading
+    await this.sweepExpiryForUser(userId);
+
     const page = dto.page || 1;
     const limit = dto.limit || 10;
     const skip = (page - 1) * limit;
@@ -228,8 +226,11 @@ export class BookingsService {
 
     const [bookings, total] = await qb.getManyAndCount();
 
+    // Strip rejection_reason from each — never leak it to the customer.
+    const sanitized = bookings.map((b) => this.stripInternalFields(b));
+
     return {
-      bookings,
+      bookings: sanitized,
       pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
     };
   }
@@ -243,6 +244,9 @@ export class BookingsService {
     if (!cook) {
       throw new NotFoundException('Cook profile not found');
     }
+
+    // On-demand expiry pass BEFORE reading
+    await this.sweepExpiryForCook(cook.id);
 
     const page = dto.page || 1;
     const limit = dto.limit || 10;
@@ -282,7 +286,274 @@ export class BookingsService {
     return booking;
   }
 
+  /**
+   * Same as findById but strips rejection_reason for customer-facing endpoints.
+   * Use this when the requester is the customer (not admin, not chef).
+   */
+  async findByIdForCustomer(id: string) {
+    const b = await this.findById(id);
+    return this.stripInternalFields(b);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // NEW FLOW: CHEF ACCEPT / REJECT
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Chef accepts a booking → status becomes AWAITING_PAYMENT.
+   * Customer has 3 hours to pay.
+   */
+  async acceptBooking(bookingId: string, userId: string) {
+    const booking = await this.findById(bookingId);
+
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can accept this booking');
+    }
+
+    // Run expiry check — chef might be accepting too late
+    const maybeExpired = await this.expireIfLapsed(booking);
+    if (maybeExpired.status === BookingStatus.EXPIRED) {
+      throw new BadRequestException('This booking has expired and can no longer be accepted');
+    }
+
+    if (
+      booking.status !== BookingStatus.PENDING_CHEF_APPROVAL &&
+      booking.status !== BookingStatus.PENDING // legacy rows
+    ) {
+      throw new BadRequestException(
+        `Cannot accept a booking in status "${booking.status}"`,
+      );
+    }
+
+    const now = new Date();
+    booking.status = BookingStatus.AWAITING_PAYMENT;
+    booking.chef_responded_at = now;
+    booking.payment_expires_at = new Date(now.getTime() + PAYMENT_WINDOW_MS);
+
+    await this.bookingsRepository.save(booking);
+
+    // ─── NOTIFY: Chef accepted → customer (in-app + email) ───
+    this.notificationsService
+      .notifyChefAccepted(
+        booking.user_id,
+        booking.user?.email || null,
+        bookingId,
+        booking.cook?.user?.name || 'Your chef',
+      )
+      .catch((err) => this.logger.warn(`Accept notification failed: ${err.message}`));
+
+    return this.findById(bookingId);
+  }
+
+  /**
+   * Chef rejects a booking with a reason.
+   * Reason stays internal — customer is NEVER shown the reason.
+   */
+  async rejectBooking(bookingId: string, userId: string, dto: RejectBookingDto) {
+    const booking = await this.findById(bookingId);
+
+    const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Only the assigned chef can reject this booking');
+    }
+
+    if (
+      booking.status !== BookingStatus.PENDING_CHEF_APPROVAL &&
+      booking.status !== BookingStatus.PENDING // legacy rows
+    ) {
+      throw new BadRequestException(
+        `Cannot reject a booking in status "${booking.status}"`,
+      );
+    }
+
+    const now = new Date();
+    booking.status = BookingStatus.CANCELLED_BY_COOK;
+    booking.cancelled_at = now;
+    booking.chef_responded_at = now;
+    booking.rejection_reason = dto.reason; // internal only
+    booking.cancellation_reason = null; // keep separate from customer-visible cancel reason
+
+    await this.bookingsRepository.save(booking);
+
+    // ─── NOTIFY: Chef rejected → customer (NO reason) ───
+    this.notificationsService
+      .notifyChefRejected(
+        booking.user_id,
+        booking.user?.email || null,
+        bookingId,
+        booking.cook?.user?.name || 'The chef',
+      )
+      .catch((err) => this.logger.warn(`Reject notification failed: ${err.message}`));
+
+    // Return customer-safe view (no rejection_reason) — but the chef is calling
+    // this endpoint. It is still safe to strip; chef didn't need it echoed back.
+    return this.stripInternalFields(booking);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // NEW FLOW: REBOOK WITH A DIFFERENT CHEF
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Customer picks "Book another chef" after rejection/expiry.
+   * Creates a brand new booking with new cook_id + freshly selected dishes,
+   * carrying over scheduled_at, guests, duration_hours, address.
+   * Links the old booking to the new one via rebooked_to_id.
+   */
+  async rebookWithDifferentChef(
+    originalBookingId: string,
+    userId: string,
+    dto: RebookDto,
+  ) {
+    const original = await this.findById(originalBookingId);
+
+    if (original.user_id !== userId) {
+      throw new ForbiddenException('Not authorized to rebook this booking');
+    }
+
+    const isEligible =
+      original.status === BookingStatus.CANCELLED_BY_COOK ||
+      original.status === BookingStatus.EXPIRED;
+    if (!isEligible) {
+      throw new BadRequestException(
+        'Only rejected or expired bookings can be rebooked',
+      );
+    }
+
+    if (original.rebooked_to_id) {
+      throw new BadRequestException('This booking has already been rebooked');
+    }
+
+    if (dto.new_cook_id === original.cook_id) {
+      throw new BadRequestException('Please choose a different chef');
+    }
+
+    // Create new booking using the customer-facing flow. Date/address/guests
+    // carry over; dishes + chef are fresh.
+    const created = await this.createBooking(userId, {
+      cook_id: dto.new_cook_id,
+      booking_type: original.booking_type,
+      scheduled_at: original.scheduled_at.toISOString(),
+      duration_hours: original.duration_hours,
+      guests: original.guests,
+      address: original.address,
+      latitude: original.latitude ? Number(original.latitude) : undefined,
+      longitude: original.longitude ? Number(original.longitude) : undefined,
+      instructions: dto.instructions ?? original.instructions ?? undefined,
+      selected_items: dto.selected_items,
+    });
+
+    // Link original → new for admin audit trail
+    await this.bookingsRepository.update(originalBookingId, {
+      rebooked_to_id: created.id,
+    });
+
+    return this.findByIdForCustomer(created.id);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // ON-DEMAND EXPIRY (no background job)
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Expire a single booking if its window has lapsed.
+   * Returns the booking (updated if expired, unchanged otherwise).
+   */
+  async expireIfLapsed(booking: Booking): Promise<Booking> {
+    if (!EXPIRABLE_STATUSES.includes(booking.status)) return booking;
+
+    const now = Date.now();
+
+    // Chef approval window: 3h from created_at
+    if (
+      booking.status === BookingStatus.PENDING_CHEF_APPROVAL ||
+      booking.status === BookingStatus.PENDING
+    ) {
+      const createdMs = new Date(booking.created_at).getTime();
+      if (now - createdMs >= CHEF_APPROVAL_WINDOW_MS) {
+        booking.status = BookingStatus.EXPIRED;
+        booking.cancelled_at = new Date();
+        await this.bookingsRepository.save(booking);
+        // Notify both customer AND chef
+        this.fireExpiryNotifications(booking).catch(() => undefined);
+      }
+      return booking;
+    }
+
+    // Payment window: 3h from chef_responded_at (or fall back to payment_expires_at)
+    if (booking.status === BookingStatus.AWAITING_PAYMENT) {
+      const deadlineMs = booking.payment_expires_at
+        ? new Date(booking.payment_expires_at).getTime()
+        : (booking.chef_responded_at
+          ? new Date(booking.chef_responded_at).getTime() + PAYMENT_WINDOW_MS
+          : new Date(booking.created_at).getTime() + PAYMENT_WINDOW_MS);
+      if (now >= deadlineMs) {
+        booking.status = BookingStatus.EXPIRED;
+        booking.cancelled_at = new Date();
+        await this.bookingsRepository.save(booking);
+        this.fireExpiryNotifications(booking).catch(() => undefined);
+      }
+    }
+
+    return booking;
+  }
+
+  /** Sweep all customer-owned bookings for expiry before returning a list */
+  private async sweepExpiryForUser(userId: string): Promise<void> {
+    const candidates = await this.bookingsRepository.find({
+      where: { user_id: userId, status: In(EXPIRABLE_STATUSES) },
+      relations: ['user', 'cook', 'cook.user'],
+    });
+    for (const b of candidates) {
+      try { await this.expireIfLapsed(b); } catch (err) {
+        this.logger.warn(`Expiry sweep failed for ${b.id}: ${err?.message}`);
+      }
+    }
+  }
+
+  /** Sweep all cook-owned bookings for expiry before returning a list */
+  private async sweepExpiryForCook(cookId: string): Promise<void> {
+    const candidates = await this.bookingsRepository.find({
+      where: { cook_id: cookId, status: In(EXPIRABLE_STATUSES) },
+      relations: ['user', 'cook', 'cook.user'],
+    });
+    for (const b of candidates) {
+      try { await this.expireIfLapsed(b); } catch (err) {
+        this.logger.warn(`Expiry sweep failed for ${b.id}: ${err?.message}`);
+      }
+    }
+  }
+
+  private async fireExpiryNotifications(booking: Booking) {
+    // Customer always notified
+    await this.notificationsService.notifyBookingExpired(
+      booking.user_id,
+      booking.user?.email || null,
+      booking.id,
+      'customer',
+    );
+    // Chef notified
+    if (booking.cook?.user_id) {
+      await this.notificationsService.notifyBookingExpired(
+        booking.cook.user_id,
+        booking.cook.user?.email || null,
+        booking.id,
+        'chef',
+      );
+    }
+  }
+
+  /** Remove internal-only fields before returning to customer endpoints */
+  private stripInternalFields(b: Booking): Booking {
+    // Return a shallow copy with sensitive field nulled.
+    const safe: any = { ...b };
+    safe.rejection_reason = null;
+    return safe as Booking;
+  }
+
   // ─── UPDATE BOOKING STATUS ────────────────────────────
+  // Kept for backward-compat (cancel flows, admin overrides, etc.)
   async updateStatus(
     bookingId: string,
     userId: string,
@@ -291,7 +562,6 @@ export class BookingsService {
   ) {
     const booking = await this.findById(bookingId);
 
-    // Validate ownership
     const cook = await this.cooksRepository.findOne({
       where: { user_id: userId },
     });
@@ -303,7 +573,6 @@ export class BookingsService {
       throw new ForbiddenException('Not authorized to update this booking');
     }
 
-   // Validate status transitions
     this.validateStatusTransition(
       booking.status,
       dto.status,
@@ -312,25 +581,31 @@ export class BookingsService {
       isAdmin,
     );
 
-    // Block confirmation if payment not completed
-    if (dto.status === BookingStatus.CONFIRMED) {
+    // NEW FLOW: chef is no longer allowed to transition to CONFIRMED here.
+    // Chef uses /accept which goes to AWAITING_PAYMENT.
+    // Payment capture is what moves AWAITING_PAYMENT → CONFIRMED.
+    if (dto.status === BookingStatus.CONFIRMED && !isAdmin) {
+      throw new ForbiddenException(
+        'Booking can only be confirmed by payment capture. Chef must use /accept.',
+      );
+    }
+
+    // Admin override path: if admin forces CONFIRMED, still require a captured payment.
+    if (dto.status === BookingStatus.CONFIRMED && isAdmin) {
       const payment = await this.paymentsRepository.findOne({
         where: { booking_id: bookingId, status: PaymentStatus.CAPTURED },
       });
       if (!payment) {
-        throw new BadRequestException('Payment must be completed before confirming booking');
+        throw new BadRequestException('Payment must be captured before confirming booking');
       }
     }
 
-    // Update status
     booking.status = dto.status;
 
-    // Set timestamps + send notifications
     const now = new Date();
     switch (dto.status) {
       case BookingStatus.CONFIRMED:
         booking.confirmed_at = now;
-        // ─── NOTIFY: Chef accepted → customer ───
         this.notificationsService
           .notifyBookingConfirmed(
             booking.user_id,
@@ -342,23 +617,19 @@ export class BookingsService {
 
       case BookingStatus.IN_PROGRESS:
         booking.started_at = now;
-        // Notification handled by verifyStartOtp
         break;
 
       case BookingStatus.COMPLETED:
         booking.completed_at = now;
-        // Calculate actual duration
         if (booking.started_at) {
           booking.actual_duration_minutes = Math.round(
             (now.getTime() - new Date(booking.started_at).getTime()) / (1000 * 60),
           );
         }
-        // Update cook stats
         if (cook) {
           cook.total_bookings += 1;
           await this.cooksRepository.save(cook);
         }
-        // ─── NOTIFY: Session completed → both ───
         this.notificationsService
           .notifySessionCompleted(
             booking.user_id,
@@ -367,7 +638,6 @@ export class BookingsService {
             booking.actual_duration_minutes || 0,
           )
           .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
-        // ─── NOTIFY: Review prompt → customer ───
         this.notificationsService
           .notifyReviewPrompt(
             booking.user_id,
@@ -380,9 +650,7 @@ export class BookingsService {
       case BookingStatus.CANCELLED_BY_USER:
         booking.cancelled_at = now;
         booking.cancellation_reason = dto.cancellation_reason || null;
-        // Calculate refund
         booking.refund_amount = this.getCancellationRefund(booking);
-        // ─── NOTIFY: Customer cancelled → chef ───
         if (booking.cook?.user_id) {
           this.notificationsService
             .notifyBookingCancelled(booking.cook.user_id, bookingId, 'customer')
@@ -393,9 +661,7 @@ export class BookingsService {
       case BookingStatus.CANCELLED_BY_COOK:
         booking.cancelled_at = now;
         booking.cancellation_reason = dto.cancellation_reason || null;
-        // Chef cancels → full refund to customer
         booking.refund_amount = Number(booking.total_price);
-        // ─── NOTIFY: Chef cancelled → customer ───
         this.notificationsService
           .notifyBookingCancelled(booking.user_id, bookingId, 'chef')
           .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
@@ -408,14 +674,12 @@ export class BookingsService {
   }
 
   // ═══════════════════════════════════════════════════════
-  // COOKING SESSION OTP
+  // COOKING SESSION OTP (unchanged)
   // ═══════════════════════════════════════════════════════
 
-  /** Chef clicks "Start Cooking" → OTP sent to customer email */
   async sendStartOtp(bookingId: string, userId: string) {
     const booking = await this.findById(bookingId);
 
-    // Only the assigned cook can send start OTP
     const cook = await this.cooksRepository.findOne({ where: { user_id: userId } });
     if (!cook || booking.cook_id !== cook.id) {
       throw new ForbiddenException('Only the assigned chef can start this session');
@@ -427,10 +691,9 @@ export class BookingsService {
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     booking.start_otp = otp;
-    booking.start_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    booking.start_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000);
     await this.bookingsRepository.save(booking);
 
-    // Send OTP to customer email
     const customerEmail = booking.user?.email;
     if (customerEmail) {
       this.sendCookingOtpEmail(customerEmail, otp, 'start', booking.cook?.user?.name || 'Your chef')
@@ -440,7 +703,6 @@ export class BookingsService {
     return { message: 'Start OTP sent to customer', expires_in_minutes: 10 };
   }
 
-  /** Chef enters start OTP → session starts */
   async verifyStartOtp(bookingId: string, userId: string, otp: string) {
     const booking = await this.findById(bookingId);
 
@@ -461,14 +723,12 @@ export class BookingsService {
       throw new BadRequestException('Invalid OTP');
     }
 
-    // OTP verified → start session
     booking.status = BookingStatus.IN_PROGRESS;
     booking.started_at = new Date();
     booking.start_otp = null;
     booking.start_otp_expires_at = null;
     await this.bookingsRepository.save(booking);
 
-    // ─── NOTIFY: Cooking started → customer ───
     this.notificationsService
       .notifySessionStarted(
         booking.user_id,
@@ -480,7 +740,6 @@ export class BookingsService {
     return { message: 'Cooking session started', started_at: booking.started_at };
   }
 
-  /** Chef clicks "End Session" → OTP sent to customer email */
   async sendEndOtp(bookingId: string, userId: string) {
     const booking = await this.findById(bookingId);
 
@@ -507,7 +766,6 @@ export class BookingsService {
     return { message: 'End OTP sent to customer', expires_in_minutes: 10 };
   }
 
-  /** Chef enters end OTP → session ends, duration calculated */
   async verifyEndOtp(bookingId: string, userId: string, otp: string) {
     const booking = await this.findById(bookingId);
 
@@ -528,14 +786,12 @@ export class BookingsService {
       throw new BadRequestException('Invalid OTP');
     }
 
-    // OTP verified → complete session
     const now = new Date();
     booking.status = BookingStatus.COMPLETED;
     booking.completed_at = now;
     booking.end_otp = null;
     booking.end_otp_expires_at = null;
 
-    // Calculate actual duration
     if (booking.started_at) {
       booking.actual_duration_minutes = Math.round(
         (now.getTime() - new Date(booking.started_at).getTime()) / (1000 * 60),
@@ -544,11 +800,9 @@ export class BookingsService {
 
     await this.bookingsRepository.save(booking);
 
-    // Update cook stats
     cook.total_bookings += 1;
     await this.cooksRepository.save(cook);
 
-    // ─── NOTIFY: Session completed → both ───
     this.notificationsService
       .notifySessionCompleted(
         booking.user_id,
@@ -558,7 +812,6 @@ export class BookingsService {
       )
       .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
 
-    // ─── NOTIFY: Review prompt → customer ───
     this.notificationsService
       .notifyReviewPrompt(
         booking.user_id,
@@ -583,8 +836,22 @@ export class BookingsService {
     isAdmin: boolean,
   ) {
     const allowed: Record<BookingStatus, BookingStatus[]> = {
-      [BookingStatus.PENDING]: [
+      [BookingStatus.PENDING_CHEF_APPROVAL]: [
+        BookingStatus.AWAITING_PAYMENT,
+        BookingStatus.CANCELLED_BY_USER,
+        BookingStatus.CANCELLED_BY_COOK,
+        BookingStatus.EXPIRED,
+      ],
+      [BookingStatus.AWAITING_PAYMENT]: [
         BookingStatus.CONFIRMED,
+        BookingStatus.CANCELLED_BY_USER,
+        BookingStatus.CANCELLED_BY_COOK,
+        BookingStatus.EXPIRED,
+      ],
+      // Legacy: still accepted so old pending rows can be moved forward
+      [BookingStatus.PENDING]: [
+        BookingStatus.AWAITING_PAYMENT,
+        BookingStatus.CONFIRMED, // admin-only path
         BookingStatus.CANCELLED_BY_USER,
         BookingStatus.CANCELLED_BY_COOK,
         BookingStatus.EXPIRED,
@@ -607,10 +874,6 @@ export class BookingsService {
       );
     }
 
-    if (next === BookingStatus.CONFIRMED && !isCook && !isAdmin) {
-      throw new ForbiddenException('Only the cook can confirm a booking');
-    }
-
     if (next === BookingStatus.CANCELLED_BY_USER && !isUser && !isAdmin) {
       throw new ForbiddenException('Only the customer can cancel as user');
     }
@@ -619,20 +882,12 @@ export class BookingsService {
       throw new ForbiddenException('Only the cook can cancel as cook');
     }
 
-    // Note: COMPLETED is now handled via verifyEndOtp primarily
-    // But we keep the manual option for admin
     if (next === BookingStatus.COMPLETED && !isAdmin) {
       throw new ForbiddenException('Session completion requires end OTP verification');
     }
   }
 
   // ─── CANCELLATION REFUND CALCULATION (Apr 19 launch policy) ──────────
-  // Customer cancels:
-  //   - 2+ hours before slot: 80% of DISH amount refunded; visit fee non-refundable
-  //   - <2 hours before slot: no refund
-  // Chef cancels (handled in cancel flow): always full refund of total_price
-  // Pending status (chef hasn't confirmed yet): always full refund (caller decides)
-  // Source of truth: public /refund page.
   getCancellationRefund(booking: Booking): number {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
@@ -642,13 +897,12 @@ export class BookingsService {
     const dishAmount = Math.max(total - visitFee, 0);
 
     if (hoursUntil >= 2) {
-      // 80% of dish amount; visit fee retained
       return Math.round(dishAmount * 0.8 * 100) / 100;
     }
     return 0;
   }
 
-  // ─── SEND COOKING OTP EMAIL (via Brevo) ───────────────
+  // ─── SEND COOKING OTP EMAIL (via Brevo) — unchanged ───
   private async sendCookingOtpEmail(
     email: string,
     otp: string,
@@ -665,10 +919,7 @@ export class BookingsService {
       ? 'Your Cooking Session OTP - Start'
       : 'Your Cooking Session OTP - End';
 
-    const heading = isStart
-      ? 'Cooking Session Starting!'
-      : 'Cooking Session Ending';
-
+    const heading = isStart ? 'Cooking Session Starting!' : 'Cooking Session Ending';
     const message = isStart
       ? `${chefName} is ready to start cooking! Share this OTP with your chef to begin the session.`
       : `${chefName} has finished cooking. Share this OTP with your chef to end the session.`;
@@ -679,30 +930,21 @@ export class BookingsService {
           <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
         </div>
         <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">${heading}</h2>
-        <p style="text-align: center; color: #8B7355; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
-          ${message}
-        </p>
+        <p style="text-align: center; color: #8B7355; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">${message}</p>
         <div style="background: white; border-radius: 12px; padding: 20px; text-align: center; border: 2px dashed #FFB347; margin-bottom: 24px;">
           <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #D4721A;">${otp}</div>
           <div style="font-size: 12px; color: #8B7355; margin-top: 8px;">Valid for 10 minutes</div>
         </div>
-        <p style="text-align: center; color: #B0A090; font-size: 12px;">
-          Do not share this OTP with anyone other than your chef.
-        </p>
+        <p style="text-align: center; color: #B0A090; font-size: 12px;">Do not share this OTP with anyone other than your chef.</p>
         <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
-        <p style="text-align: center; color: #B0A090; font-size: 11px;">
-          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India
-        </p>
+        <p style="text-align: center; color: #B0A090; font-size: 11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
       </div>
     `;
 
     try {
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': this.brevoApiKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
         body: JSON.stringify({
           sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
           to: [{ email }],
@@ -710,7 +952,6 @@ export class BookingsService {
           htmlContent: html,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
         this.logger.log(`Cooking OTP (${type}) sent to ${email} — messageId: ${result.messageId}`);
@@ -722,7 +963,7 @@ export class BookingsService {
     }
   }
 
-  // ─── SEND BOOKING RECEIPT EMAIL (via Brevo) ───────────
+  // ─── SEND BOOKING RECEIPT EMAIL (via Brevo) — unchanged except copy ──
   private async sendBookingReceiptEmail(
     email: string,
     customerName: string,
@@ -744,14 +985,10 @@ export class BookingsService {
     }
 
     const dateStr = scheduledAt.toLocaleDateString('en-IN', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
     const timeStr = scheduledAt.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
+      hour: '2-digit', minute: '2-digit',
     });
 
     const dishListHtml = dishes.length > 0
@@ -765,106 +1002,54 @@ export class BookingsService {
         <div style="text-align: center; margin-bottom: 24px;">
           <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
         </div>
-
-        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">Booking Confirmation</h2>
+        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">Booking Request Received</h2>
         <p style="text-align: center; color: #8B7355; font-size: 14px; margin-bottom: 24px;">
-          Thank you, ${customerName}! Your booking has been placed.
+          Thank you, ${customerName}! Your request has been sent to the chef.
         </p>
-
         <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
           <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355; width: 40%;">Booking ID</td>
-              <td style="padding: 8px 0; color: #2D1810; font-weight: 600;">#${shortId}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355;">Chef</td>
-              <td style="padding: 8px 0; color: #2D1810; font-weight: 600;">${chefName}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355;">Date</td>
-              <td style="padding: 8px 0; color: #2D1810;">${dateStr}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355;">Time</td>
-              <td style="padding: 8px 0; color: #2D1810;">${timeStr}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355;">Duration</td>
-              <td style="padding: 8px 0; color: #2D1810;">${durationHours} hours</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355;">Guests</td>
-              <td style="padding: 8px 0; color: #2D1810;">${guests}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px 0; color: #8B7355; vertical-align: top;">Address</td>
-              <td style="padding: 8px 0; color: #2D1810;">${address}</td>
-            </tr>
+            <tr><td style="padding: 8px 0; color: #8B7355; width: 40%;">Booking ID</td><td style="padding: 8px 0; color: #2D1810; font-weight: 600;">#${shortId}</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355;">Chef</td><td style="padding: 8px 0; color: #2D1810; font-weight: 600;">${chefName}</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355;">Date</td><td style="padding: 8px 0; color: #2D1810;">${dateStr}</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355;">Time</td><td style="padding: 8px 0; color: #2D1810;">${timeStr}</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355;">Duration</td><td style="padding: 8px 0; color: #2D1810;">${durationHours} hours</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355;">Guests</td><td style="padding: 8px 0; color: #2D1810;">${guests}</td></tr>
+            <tr><td style="padding: 8px 0; color: #8B7355; vertical-align: top;">Address</td><td style="padding: 8px 0; color: #2D1810;">${address}</td></tr>
           </table>
         </div>
-
         <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
           <h3 style="color: #2D1810; font-size: 15px; margin: 0 0 12px;">Selected Dishes</h3>
-          <ul style="margin: 0; padding-left: 20px; font-size: 14px;">
-            ${dishListHtml}
-          </ul>
+          <ul style="margin: 0; padding-left: 20px; font-size: 14px;">${dishListHtml}</ul>
         </div>
-
         <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 24px;">
           <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
-            <tr>
-              <td style="padding: 6px 0; color: #8B7355;">Subtotal</td>
-              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${subtotal.toFixed(2)}</td>
-            </tr>
-            ${visitFee > 0 ? `
-            <tr>
-              <td style="padding: 6px 0; color: #8B7355;">Visit fee</td>
-              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${visitFee.toFixed(2)}</td>
-            </tr>` : ''}
-            <tr>
-              <td style="padding: 6px 0; color: #8B7355;">Convenience fee (2.5%)</td>
-              <td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${platformFee.toFixed(2)}</td>
-            </tr>
-            <tr>
-              <td colspan="2"><hr style="border: none; border-top: 1px dashed #FFE4B5; margin: 8px 0;" /></td>
-            </tr>
-            <tr>
-              <td style="padding: 6px 0; color: #2D1810; font-weight: 700; font-size: 16px;">Total</td>
-              <td style="padding: 6px 0; color: #D4721A; font-weight: 700; font-size: 16px; text-align: right;">&#8377;${total.toFixed(2)}</td>
-            </tr>
-            <tr>
-              <td colspan="2" style="padding: 6px 0; color: #8B7355; font-size: 11px; font-style: italic;">+ Ingredients at actual market cost (with receipt)</td>
-            </tr>
+            <tr><td style="padding: 6px 0; color: #8B7355;">Subtotal</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${subtotal.toFixed(2)}</td></tr>
+            ${visitFee > 0 ? `<tr><td style="padding: 6px 0; color: #8B7355;">Visit fee</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${visitFee.toFixed(2)}</td></tr>` : ''}
+            <tr><td style="padding: 6px 0; color: #8B7355;">Convenience fee (2.5%)</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${platformFee.toFixed(2)}</td></tr>
+            <tr><td colspan="2"><hr style="border: none; border-top: 1px dashed #FFE4B5; margin: 8px 0;" /></td></tr>
+            <tr><td style="padding: 6px 0; color: #2D1810; font-weight: 700; font-size: 16px;">Total</td><td style="padding: 6px 0; color: #D4721A; font-weight: 700; font-size: 16px; text-align: right;">&#8377;${total.toFixed(2)}</td></tr>
+            <tr><td colspan="2" style="padding: 6px 0; color: #8B7355; font-size: 11px; font-style: italic;">+ Ingredients at actual market cost (with receipt)</td></tr>
           </table>
         </div>
-
         <p style="text-align: center; color: #8B7355; font-size: 13px; line-height: 1.6; margin-bottom: 16px;">
-          Your chef will be notified and will accept or decline your request shortly. You'll receive an email once confirmed.
+          Your chef has 3 hours to accept or decline. Payment will only be requested after the chef accepts.
         </p>
-
         <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
-        <p style="text-align: center; color: #B0A090; font-size: 11px;">
-          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India
-        </p>
+        <p style="text-align: center; color: #B0A090; font-size: 11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
       </div>
     `;
 
     try {
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': this.brevoApiKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
         body: JSON.stringify({
           sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
           to: [{ email }],
-          subject: `Booking Confirmed — #${shortId} | CookOnCall`,
+          subject: `Booking Request — #${shortId} | CookOnCall`,
           htmlContent: html,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
         this.logger.log(`Booking receipt sent to ${email} — bookingId: ${bookingId}`);

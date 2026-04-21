@@ -12,6 +12,14 @@ import { User } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 
 export enum BookingStatus {
+  // ─── NEW FLOW (Apr 21, 2026) ─────────────────────────
+  // Customer books → chef has 3hr to accept/reject
+  PENDING_CHEF_APPROVAL = 'pending_chef_approval',
+  // Chef accepted → customer has 3hr to pay
+  AWAITING_PAYMENT = 'awaiting_payment',
+  // ─── LEGACY (kept for backward-compat with old DB rows) ─
+  // `pending` rows get migrated to `pending_chef_approval` via SQL.
+  // We keep the enum value so old rows don't break TypeORM reads.
   PENDING = 'pending',
   CONFIRMED = 'confirmed',
   IN_PROGRESS = 'in_progress',
@@ -48,7 +56,7 @@ export class Booking {
   @Column({
     type: 'enum',
     enum: BookingStatus,
-    default: BookingStatus.PENDING,
+    default: BookingStatus.PENDING_CHEF_APPROVAL,
   })
   status: BookingStatus;
 
@@ -97,8 +105,6 @@ export class Booking {
   total_price: number;
 
   // ─── LAUNCH PRICING (Apr 19, 2026) ───────────────────
-  // visit_fee: ₹49 flat for home cooking, 0 for food delivery
-  // platform_fee_percent: 2.5 (charged to customer); chef pays separate 2.5% on payout
   @Column({ type: 'int', default: 49 })
   visit_fee: number;
 
@@ -108,22 +114,37 @@ export class Booking {
   @Column({ type: 'text', nullable: true })
   cancellation_reason: string;
 
+  // ─── CHEF REJECTION (Apr 21, 2026) ───────────────────
+  // Internal-only. MUST NOT be returned to customer endpoints.
+  @Column({ type: 'text', nullable: true })
+  rejection_reason: string;
+
+  // Timestamp set when chef accepts OR rejects.
+  @Column({ type: 'timestamptz', nullable: true })
+  chef_responded_at: Date;
+
+  // Set to chef_responded_at + 3h when chef accepts. Used for on-demand expiry.
+  @Column({ type: 'timestamptz', nullable: true })
+  payment_expires_at: Date;
+
+  // Link to the rebooked/replacement booking when a customer chooses
+  // "book another chef" after rejection. Lets us show a chain in admin.
+  @Column({ type: 'uuid', nullable: true })
+  rebooked_to_id: string;
+
   // ─── COOKING SESSION OTP ─────────────────────────────
-  // Start OTP: sent to customer when chef clicks "Start Cooking"
   @Column({ type: 'varchar', length: 6, nullable: true })
   start_otp: string;
 
   @Column({ type: 'timestamptz', nullable: true })
   start_otp_expires_at: Date;
 
-  // End OTP: sent to customer when chef clicks "End Session"
   @Column({ type: 'varchar', length: 6, nullable: true })
   end_otp: string;
 
   @Column({ type: 'timestamptz', nullable: true })
   end_otp_expires_at: Date;
 
-  // Actual cooking duration in minutes (calculated from started_at to completed_at)
   @Column({ type: 'int', nullable: true })
   actual_duration_minutes: number;
 

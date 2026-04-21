@@ -14,6 +14,11 @@ export enum NotificationType {
   BOOKING_CANCELLED = 'booking_cancelled',
   BOOKING_COMPLETED = 'booking_completed',
   BOOKING_STARTED = 'booking_started',
+  // New (Apr 21, 2026): booking flow events
+  BOOKING_CHEF_ACCEPTED = 'booking_chef_accepted', // customer: pay within 3 hrs
+  BOOKING_CHEF_REJECTED = 'booking_chef_rejected', // customer: rebook or close (NO reason)
+  BOOKING_EXPIRED = 'booking_expired',             // either party: window lapsed
+  PAYMENT_REMINDER = 'payment_reminder',           // customer: pay reminder
   COOK_ON_WAY = 'cook_on_way',
   PAYMENT_RECEIVED = 'payment_received',
   PAYMENT_RELEASED = 'payment_released',

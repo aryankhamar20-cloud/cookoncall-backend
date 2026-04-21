@@ -16,6 +16,8 @@ import {
   CreateBookingDto,
   GetBookingsDto,
   UpdateBookingStatusDto,
+  RejectBookingDto,
+  RebookDto,
 } from './dto/booking.dto';
 
 @Controller('bookings')
@@ -61,7 +63,45 @@ export class BookingsController {
       return { message: 'Not authorized to view this booking' };
     }
 
+    // Customer view strips internal-only fields like rejection_reason.
+    if (isUserOwner && !isAdmin) {
+      return this.bookingsService.findByIdForCustomer(id);
+    }
     return booking;
+  }
+
+  // ─── NEW FLOW: CHEF ACCEPT / REJECT ───────────────────
+
+  /** Chef accepts the booking → status becomes AWAITING_PAYMENT */
+  @Post(':id/accept')
+  async acceptBooking(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.acceptBooking(id, user.id);
+  }
+
+  /**
+   * Chef rejects the booking with a reason.
+   * Reason is stored internally and NEVER returned to customer endpoints.
+   */
+  @Post(':id/reject')
+  async rejectBooking(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RejectBookingDto,
+  ) {
+    return this.bookingsService.rejectBooking(id, user.id, dto);
+  }
+
+  /** Customer rebooks with a different chef after rejection/expiry */
+  @Post(':id/rebook')
+  async rebook(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RebookDto,
+  ) {
+    return this.bookingsService.rebookWithDifferentChef(id, user.id, dto);
   }
 
   @Patch(':id/status')
@@ -75,7 +115,6 @@ export class BookingsController {
 
   // ─── COOKING SESSION OTP ENDPOINTS ─────────────────────
 
-  /** Chef clicks "Start Cooking" → sends OTP to customer */
   @Post(':id/start-otp')
   async sendStartOtp(
     @CurrentUser() user: User,
@@ -84,7 +123,6 @@ export class BookingsController {
     return this.bookingsService.sendStartOtp(id, user.id);
   }
 
-  /** Chef enters the start OTP customer gave them */
   @Post(':id/verify-start-otp')
   async verifyStartOtp(
     @CurrentUser() user: User,
@@ -94,7 +132,6 @@ export class BookingsController {
     return this.bookingsService.verifyStartOtp(id, user.id, otp);
   }
 
-  /** Chef clicks "End Session" → sends OTP to customer */
   @Post(':id/end-otp')
   async sendEndOtp(
     @CurrentUser() user: User,
@@ -103,7 +140,6 @@ export class BookingsController {
     return this.bookingsService.sendEndOtp(id, user.id);
   }
 
-  /** Chef enters the end OTP → session complete */
   @Post(':id/verify-end-otp')
   async verifyEndOtp(
     @CurrentUser() user: User,
@@ -114,6 +150,9 @@ export class BookingsController {
   }
 
   // ─── CANCELLATION REFUND ESTIMATE ──────────────────────
+  // Matches the Apr 19 policy that's enforced by getCancellationRefund():
+  //   - 2+ hours before slot: 80% of dish amount (visit fee non-refundable)
+  //   - Under 2 hours: no refund
   @Get(':id/refund-estimate')
   async getRefundEstimate(
     @Param('id', ParseUUIDPipe) id: string,
@@ -123,14 +162,10 @@ export class BookingsController {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
 
-    let policy: string;
-    if (hoursUntil >= 4) {
-      policy = 'Full refund (4+ hours before session)';
-    } else if (hoursUntil >= 2) {
-      policy = '50% refund (2-4 hours before session)';
-    } else {
-      policy = 'No refund (less than 2 hours before session)';
-    }
+    const policy =
+      hoursUntil >= 2
+        ? '80% refund of dish amount (visit fee non-refundable)'
+        : 'No refund (less than 2 hours before session)';
 
     return {
       refund_amount: refund,

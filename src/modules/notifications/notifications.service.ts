@@ -9,6 +9,7 @@ import { Notification, NotificationType } from './notification.entity';
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
+  private readonly brevoApiKey: string;
 
   constructor(
     @InjectRepository(Notification)
@@ -16,7 +17,9 @@ export class NotificationsService {
     @InjectQueue('email') private emailQueue: Queue,
     @InjectQueue('sms') private smsQueue: Queue,
     private configService: ConfigService,
-  ) {}
+  ) {
+    this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
+  }
 
   // ─── CREATE IN-APP NOTIFICATION ───────────────────────
   async create(
@@ -107,6 +110,37 @@ export class NotificationsService {
     );
   }
 
+  // ─── DIRECT BREVO EMAIL (non-queued — used by booking flow) ───
+  // Railway blocks SMTP; we use Brevo HTTP API. Fire-and-forget; failure
+  // is logged but never breaks the calling flow.
+  async sendDirectEmail(to: string, subject: string, html: string) {
+    if (!this.brevoApiKey || !to) {
+      this.logger.warn(`BREVO_API_KEY missing or no recipient — skipping email to ${to}`);
+      return;
+    }
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': this.brevoApiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+        }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        this.logger.error(`Brevo email error (${response.status}): ${JSON.stringify(result)}`);
+      }
+    } catch (err) {
+      this.logger.error(`Brevo email failed for ${to}: ${err?.message || err}`);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════
   // BOOKING NOTIFICATION HELPERS
   // ═══════════════════════════════════════════════════════
@@ -123,7 +157,7 @@ export class NotificationsService {
       cookUserId,
       NotificationType.BOOKING_CREATED,
       'New Booking Request',
-      `${customerName} has placed a new booking request. Please accept or decline.`,
+      `${customerName} has placed a new booking request. You have 3 hours to accept or decline.`,
       { booking_id: bookingId },
     );
 
@@ -137,24 +171,119 @@ export class NotificationsService {
     );
   }
 
-  /** Chef accepted → notify customer */
+  /** Chef accepted → notify customer (pay within 3 hours) */
+  async notifyChefAccepted(
+    customerUserId: string,
+    customerEmail: string | null,
+    bookingId: string,
+    chefName: string,
+  ) {
+    const title = 'Chef accepted — please pay to confirm';
+    const message = `${chefName} accepted your booking! Please complete payment within 3 hours to confirm. If you already paid, please ignore this message.`;
+    await this.create(
+      customerUserId,
+      NotificationType.BOOKING_CHEF_ACCEPTED,
+      title,
+      message,
+      { booking_id: bookingId },
+    );
+
+    if (customerEmail) {
+      const html = this.wrapBrandedHtml(
+        'Chef accepted your booking!',
+        `<p style="color:#5D4E37;font-size:14px;line-height:1.6;">
+          <strong>${chefName}</strong> accepted your booking request. Please complete your payment within <strong>3 hours</strong> to confirm the booking.
+        </p>
+        <p style="color:#8B7355;font-size:13px;line-height:1.6;">
+          Open the CookOnCall app → Orders → Pay Now.<br/>
+          <em>If you already paid, please ignore this email.</em>
+        </p>`,
+      );
+      this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+    }
+  }
+
+  /** Legacy helper — kept for payments.service backward compatibility */
   async notifyBookingConfirmed(userId: string, bookingId: string, chefName: string) {
     await this.create(
       userId,
       NotificationType.BOOKING_CONFIRMED,
       'Booking Confirmed',
-      `${chefName} has accepted your booking! Get ready for a great meal.`,
+      `Your booking with ${chefName} is confirmed. See you soon!`,
       { booking_id: bookingId },
     );
   }
 
-  /** Chef rejected → notify customer */
+  /**
+   * Chef rejected → notify customer (NO reason exposed)
+   * Reason stays in DB column `rejection_reason`, admin-only.
+   */
+  async notifyChefRejected(
+    customerUserId: string,
+    customerEmail: string | null,
+    bookingId: string,
+    chefName: string,
+  ) {
+    const title = 'Unable to confirm your booking';
+    const message = `Unfortunately ${chefName} is unable to accept your booking. You can book another chef at no extra charge, or close this request.`;
+    await this.create(
+      customerUserId,
+      NotificationType.BOOKING_CHEF_REJECTED,
+      title,
+      message,
+      { booking_id: bookingId },
+    );
+
+    if (customerEmail) {
+      const html = this.wrapBrandedHtml(
+        'We could not confirm this booking',
+        `<p style="color:#5D4E37;font-size:14px;line-height:1.6;">
+          Unfortunately <strong>${chefName}</strong> could not accept your booking this time. No payment has been taken.
+        </p>
+        <p style="color:#5D4E37;font-size:14px;line-height:1.6;">
+          Open the CookOnCall app to book another chef at no extra charge, or close this request.
+        </p>`,
+      );
+      this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Booking expired — notifies the appropriate party.
+   * who = 'chef' | 'customer' — who we're notifying.
+   */
+  async notifyBookingExpired(
+    recipientUserId: string,
+    recipientEmail: string | null,
+    bookingId: string,
+    who: 'chef' | 'customer',
+  ) {
+    const title = 'Booking expired';
+    const message =
+      who === 'chef'
+        ? 'A booking request expired because you did not respond within 3 hours.'
+        : 'Your booking expired because payment was not completed within 3 hours.';
+    await this.create(
+      recipientUserId,
+      NotificationType.BOOKING_EXPIRED,
+      title,
+      message,
+      { booking_id: bookingId },
+    );
+
+    if (recipientEmail) {
+      const html = this.wrapBrandedHtml('Booking expired', `<p style="color:#5D4E37;">${message}</p>`);
+      this.sendDirectEmail(recipientEmail, title, html).catch(() => undefined);
+    }
+  }
+
+  /** Legacy helper kept for callers still using it */
   async notifyBookingDeclined(userId: string, bookingId: string, chefName: string) {
     await this.create(
       userId,
       NotificationType.BOOKING_CANCELLED,
       'Booking Declined',
-      `${chefName} was unable to accept your booking. Please try another chef.`,
+      `${chefName} was unable to accept your booking.`,
       { booking_id: bookingId },
     );
   }
@@ -196,7 +325,6 @@ export class NotificationsService {
     const mins = durationMinutes % 60;
     const durationStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins} minutes`;
 
-    // Notify customer
     await this.create(
       userId,
       NotificationType.BOOKING_COMPLETED,
@@ -205,7 +333,6 @@ export class NotificationsService {
       { booking_id: bookingId, duration_minutes: durationMinutes },
     );
 
-    // Notify chef
     await this.create(
       cookUserId,
       NotificationType.BOOKING_COMPLETED,
@@ -267,5 +394,24 @@ export class NotificationsService {
       'Payment Received',
       `Payment of ₹${amount} has been received.`,
     );
+  }
+
+  // ─── Brand email wrapper ─────────────────────────────
+  private wrapBrandedHtml(heading: string, bodyHtml: string): string {
+    return `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+        </div>
+        <h2 style="text-align:center;color:#2D1810;font-size:20px;margin-bottom:16px;">${heading}</h2>
+        <div style="background:white;border-radius:12px;padding:20px;border:1px solid #FFE4B5;">
+          ${bodyHtml}
+        </div>
+        <hr style="border:none;border-top:1px solid #FFE4B5;margin:24px 0;" />
+        <p style="text-align:center;color:#B0A090;font-size:11px;">
+          &copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India
+        </p>
+      </div>
+    `;
   }
 }

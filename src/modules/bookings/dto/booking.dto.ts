@@ -8,6 +8,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -107,6 +108,32 @@ export class UpdateBookingStatusDto {
   @IsOptional()
   @IsString()
   cancellation_reason?: string;
+}
+
+// ─── NEW (Apr 21, 2026): Chef rejects a booking ──────────
+// Reason is stored internally only. Never returned to the customer.
+export class RejectBookingDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+// ─── NEW (Apr 21, 2026): Rebook with a different chef ────
+// Used after chef rejects. Frontend sends original booking id
+// plus the new chef + freshly selected dishes.
+export class RebookDto {
+  @IsUUID()
+  new_cook_id: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SelectedItemDto)
+  selected_items: SelectedItemDto[];
+
+  @IsOptional()
+  @IsString()
+  instructions?: string;
 }
 
 export class GetBookingsDto {

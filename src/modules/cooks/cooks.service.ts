@@ -313,7 +313,11 @@ export class CooksService {
     const cook = await this.findByUserId(userId);
 
     const pending = await this.bookingsRepository.count({
-      where: { cook_id: cook.id, status: BookingStatus.PENDING },
+      where: [
+        { cook_id: cook.id, status: BookingStatus.PENDING_CHEF_APPROVAL },
+        { cook_id: cook.id, status: BookingStatus.AWAITING_PAYMENT },
+        { cook_id: cook.id, status: BookingStatus.PENDING }, // legacy
+      ],
     });
 
     const completed = await this.bookingsRepository.count({

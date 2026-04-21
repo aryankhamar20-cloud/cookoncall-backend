@@ -51,7 +51,9 @@ export class AdminService {
     });
     const activeBookings = await this.bookingsRepository.count({
       where: [
-        { status: BookingStatus.PENDING },
+        { status: BookingStatus.PENDING_CHEF_APPROVAL },
+        { status: BookingStatus.AWAITING_PAYMENT },
+        { status: BookingStatus.PENDING }, // legacy
         { status: BookingStatus.CONFIRMED },
         { status: BookingStatus.IN_PROGRESS },
       ],
