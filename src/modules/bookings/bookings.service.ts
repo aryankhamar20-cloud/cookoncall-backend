@@ -18,6 +18,7 @@ import {
   GetBookingsDto,
 } from './dto/booking.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { Payment, PaymentStatus } from '../payments/payment.entity';
 
 // ─── Pricing model (Apr 19, 2026 launch) ────────────────────────────────
 // HOME_COOKING: ₹49 flat visit fee + 2.5% convenience fee (paid by customer).
@@ -41,6 +42,8 @@ export class BookingsService {
     private usersRepository: Repository<User>,
     @InjectRepository(MenuItem)
     private menuItemsRepository: Repository<MenuItem>,
+    @InjectRepository(Payment)
+    private paymentsRepository: Repository<Payment>,
     private notificationsService: NotificationsService,
     private configService: ConfigService,
   ) {
@@ -300,7 +303,7 @@ export class BookingsService {
       throw new ForbiddenException('Not authorized to update this booking');
     }
 
-    // Validate status transitions
+   // Validate status transitions
     this.validateStatusTransition(
       booking.status,
       dto.status,
@@ -308,6 +311,16 @@ export class BookingsService {
       isCook,
       isAdmin,
     );
+
+    // Block confirmation if payment not completed
+    if (dto.status === BookingStatus.CONFIRMED) {
+      const payment = await this.paymentsRepository.findOne({
+        where: { booking_id: bookingId, status: PaymentStatus.CAPTURED },
+      });
+      if (!payment) {
+        throw new BadRequestException('Payment must be completed before confirming booking');
+      }
+    }
 
     // Update status
     booking.status = dto.status;

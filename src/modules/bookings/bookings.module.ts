@@ -9,11 +9,12 @@ import { Booking } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
 import { User } from '../users/user.entity';
 import { MenuItem } from '../cooks/menu-item.entity';
+import { Payment } from '../payments/payment.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Booking, Cook, User, MenuItem]),
+    TypeOrmModule.forFeature([Booking, Cook, User, MenuItem, Payment]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
