@@ -67,7 +67,7 @@ export class PaymentsService {
     }
 
     const amount = Number(booking.total_price);
-    if (!amount || amount <= 49 || Number.isNaN(amount)) {
+    if (!amount || amount <= 0 || Number.isNaN(amount)) {
       throw new BadRequestException('Invalid booking amount — please contact support');
     }
 
