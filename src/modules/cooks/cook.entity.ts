@@ -17,6 +17,19 @@ export enum VerificationStatus {
   REJECTED = 'rejected',
 }
 
+// ─── SERVICE ROLE ─────────────────────────────────────────
+// What the chef actually does on-site.
+// home_cook  = cooks fresh at the customer's kitchen (default)
+// tiffin     = prepares at own place, delivers / drops off
+// event      = party / bulk cooking, caterer-style
+// any        = all of the above
+export enum ServiceRole {
+  HOME_COOK = 'home_cook',
+  TIFFIN = 'tiffin',
+  EVENT = 'event',
+  ANY = 'any',
+}
+
 @Entity('cooks')
 export class Cook {
   @PrimaryGeneratedColumn('uuid')
@@ -67,6 +80,14 @@ export class Cook {
 
   @Column({ default: false })
   is_veg_only: boolean;
+
+  // ─── SERVICE ROLE ─────────────────────────────────────
+  @Column({
+    type: 'enum',
+    enum: ServiceRole,
+    default: ServiceRole.HOME_COOK,
+  })
+  service_role: ServiceRole;
 
   // ─── VERIFICATION DOCUMENTS ──────────────────────────
   @Column({ nullable: true })

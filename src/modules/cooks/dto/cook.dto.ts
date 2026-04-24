@@ -11,6 +11,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { DishCategory, DishType } from '../menu-item.entity';
+import { ServiceRole } from '../cook.entity';
 
 export class CreateCookProfileDto {
   @IsString()
@@ -43,6 +44,10 @@ export class CreateCookProfileDto {
   @IsOptional()
   @IsBoolean()
   is_veg_only?: boolean;
+
+  @IsOptional()
+  @IsEnum(ServiceRole)
+  service_role?: ServiceRole;
 }
 
 export class UpdateCookProfileDto {
@@ -80,6 +85,10 @@ export class UpdateCookProfileDto {
   @IsOptional()
   @IsBoolean()
   is_available?: boolean;
+
+  @IsOptional()
+  @IsEnum(ServiceRole)
+  service_role?: ServiceRole;
 
   // Verification doc URLs (can be updated individually)
   @IsOptional()

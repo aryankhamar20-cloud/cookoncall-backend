@@ -84,6 +84,62 @@ export class ReviewsService {
     });
   }
 
+  /**
+   * Chef-side: reviews the logged-in chef has RECEIVED.
+   * Looks up the cook profile by user_id, then fetches reviews for that cook.
+   */
+  async getReviewsForCookUser(userId: string, page = 1, limit = 20) {
+    const cook = await this.cooksRepository.findOne({
+      where: { user_id: userId },
+    });
+
+    if (!cook) {
+      throw new NotFoundException('Cook profile not found for this user');
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [reviews, total] = await this.reviewsRepository.findAndCount({
+      where: { cook_id: cook.id },
+      relations: ['user', 'booking'],
+      order: { created_at: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    // Rating distribution (1★..5★)
+    const distribution: Record<string, number> = {
+      '1': 0,
+      '2': 0,
+      '3': 0,
+      '4': 0,
+      '5': 0,
+    };
+    const distRows = await this.reviewsRepository
+      .createQueryBuilder('r')
+      .select('r.rating', 'rating')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.cook_id = :cookId', { cookId: cook.id })
+      .groupBy('r.rating')
+      .getRawMany();
+    for (const row of distRows) {
+      const key = String(Math.round(Number(row.rating)));
+      if (distribution[key] !== undefined) {
+        distribution[key] = parseInt(row.count, 10);
+      }
+    }
+
+    return {
+      reviews,
+      stats: {
+        average_rating: Number(cook.rating) || 0,
+        total_reviews: cook.total_reviews || 0,
+        distribution,
+      },
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
+    };
+  }
+
   private async updateCookRating(cookId: string) {
     const result = await this.reviewsRepository
       .createQueryBuilder('r')

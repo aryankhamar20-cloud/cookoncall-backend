@@ -35,8 +35,28 @@ export class ReviewsController {
     return this.reviewsService.getCookReviews(cookId, page || 1, limit || 10);
   }
 
+  /**
+   * Reviews the CURRENT user has written (customer-side).
+   */
   @Get('me')
   async getMyReviews(@CurrentUser() user: User) {
     return this.reviewsService.getMyReviews(user.id);
+  }
+
+  /**
+   * Reviews the CURRENT chef has RECEIVED (chef-side "My Reviews" panel).
+   * Returns reviews + aggregate rating/count for the logged-in cook.
+   */
+  @Get('cook/me/received')
+  async getReviewsForMyCookProfile(
+    @CurrentUser() user: User,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.reviewsService.getReviewsForCookUser(
+      user.id,
+      page || 1,
+      limit || 20,
+    );
   }
 }
