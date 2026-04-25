@@ -10,7 +10,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { AvailabilityService } from './availability.service';
+import { AvailabilityService, Slot } from './availability.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -81,7 +81,7 @@ export class AvailabilityController {
     @Param('id', ParseUUIDPipe) cookId: string,
     @Query('date') date: string,
     @Query('duration') duration: string,
-  ) {
+  ) : Promise<Slot[]> {
     const dur = parseFloat(duration) || 2;
     return this.svc.getAvailableSlots(cookId, date, dur);
   }

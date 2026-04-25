@@ -30,7 +30,7 @@ const BLOCKING_STATUSES: BookingStatus[] = [
   BookingStatus.PENDING, // legacy
 ];
 
-interface Slot {
+export interface Slot {
   start: string; // ISO UTC
   end: string;
   label: string; // e.g. "06:00 PM"
