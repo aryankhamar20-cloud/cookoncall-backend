@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { DishCategory, DishType } from '../menu-item.entity';
-import { ServiceRole } from '../cook.entity';
+
 
 export class CreateCookProfileDto {
   @IsString()
@@ -48,7 +48,9 @@ export class CreateCookProfileDto {
 
   @IsOptional()
   @IsEnum(ServiceRole)
-  service_role?: ServiceRole;
+  @IsArray()
+  @IsString({ each: true })
+  service_roles?: string[];
 }
 
 export class UpdateCookProfileDto {
@@ -88,8 +90,9 @@ export class UpdateCookProfileDto {
   is_available?: boolean;
 
   @IsOptional()
-  @IsEnum(ServiceRole)
-  service_role?: ServiceRole;
+  @IsArray()
+  @IsString({ each: true })
+  service_roles?: string[];
 
   // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ──────────
   @IsOptional()

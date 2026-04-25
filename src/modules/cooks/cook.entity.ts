@@ -20,14 +20,12 @@ export enum VerificationStatus {
 // ─── SERVICE ROLE ─────────────────────────────────────────
 // What the chef actually does on-site.
 // home_cook  = cooks fresh at the customer's kitchen (default)
-// tiffin     = prepares at own place, delivers / drops off
-// event      = party / bulk cooking, caterer-style
-// any        = all of the above
+// delivery   = prepares at own place, delivers / drops off
+// both       = both home cooking and delivery
 export enum ServiceRole {
   HOME_COOK = 'home_cook',
-  TIFFIN = 'tiffin',
-  EVENT = 'event',
-  ANY = 'any',
+  DELIVERY = 'delivery',
+  BOTH = 'both',
 }
 
 @Entity('cooks')
@@ -83,11 +81,10 @@ export class Cook {
 
   // ─── SERVICE ROLE ─────────────────────────────────────
   @Column({
-    type: 'enum',
-    enum: ServiceRole,
-    default: ServiceRole.HOME_COOK,
+    type: 'simple-array',
+    default: 'home_cook',
   })
-  service_role: ServiceRole;
+  service_roles: string[];
 
   // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ─────────────
   // How many minutes in advance a customer must book.
