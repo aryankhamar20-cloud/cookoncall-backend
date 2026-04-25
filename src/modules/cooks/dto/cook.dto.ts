@@ -1,7 +1,6 @@
 import {
   IsArray,
   IsBoolean,
-  IsEnum,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -47,7 +46,6 @@ export class CreateCookProfileDto {
   is_veg_only?: boolean;
 
   @IsOptional()
-  @IsEnum(ServiceRole)
   @IsArray()
   @IsString({ each: true })
   service_roles?: string[];
