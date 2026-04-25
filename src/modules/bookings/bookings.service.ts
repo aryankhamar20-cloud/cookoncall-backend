@@ -21,6 +21,7 @@ import {
 } from './dto/booking.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
+import { AvailabilityService } from '../availability/availability.service';
 
 // ─── Pricing model (Apr 19, 2026 launch) ────────────────────────────────
 const VISIT_FEE_HOME_COOKING = 49;
@@ -57,6 +58,7 @@ export class BookingsService {
     private paymentsRepository: Repository<Payment>,
     private notificationsService: NotificationsService,
     private configService: ConfigService,
+    private availabilityService: AvailabilityService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -88,6 +90,15 @@ export class BookingsService {
     if (scheduledDate <= new Date()) {
       throw new BadRequestException('Scheduled date must be in the future');
     }
+
+    // ─── AVAILABILITY CHECK (Apr 24, 2026) ────────────
+    // Throws BadRequest if outside window / past min-advance / collides
+    // with another booking on this chef.
+    await this.availabilityService.assertSlotAvailable(
+      dto.cook_id,
+      scheduledDate,
+      dto.duration_hours || 2,
+    );
 
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 

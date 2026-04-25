@@ -2,6 +2,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -89,6 +90,19 @@ export class UpdateCookProfileDto {
   @IsOptional()
   @IsEnum(ServiceRole)
   service_role?: ServiceRole;
+
+  // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ──────────
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(7 * 24 * 60)
+  min_advance_notice_minutes?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(240)
+  booking_buffer_minutes?: number;
 
   // Verification doc URLs (can be updated individually)
   @IsOptional()

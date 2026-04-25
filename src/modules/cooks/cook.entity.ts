@@ -89,6 +89,17 @@ export class Cook {
   })
   service_role: ServiceRole;
 
+  // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ─────────────
+  // How many minutes in advance a customer must book.
+  // Default 60 min (1 hour) per launch decision.
+  @Column({ type: 'int', default: 60 })
+  min_advance_notice_minutes: number;
+
+  // Gap required between back-to-back bookings for travel/setup.
+  // Default 30 min. Prevents chef burnout + handles traffic delays.
+  @Column({ type: 'int', default: 30 })
+  booking_buffer_minutes: number;
+
   // ─── VERIFICATION DOCUMENTS ──────────────────────────
   @Column({ nullable: true })
   aadhaar_url: string;

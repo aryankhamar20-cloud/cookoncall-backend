@@ -10,6 +10,7 @@ import { User } from '../users/user.entity';
 import { MenuItem } from '../cooks/menu-item.entity';
 import { Payment } from '../payments/payment.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AvailabilityModule } from '../availability/availability.module';
 
 // NOTE (Apr 24): BookingsGateway removed — it was dead code (declared but
 // never emitted from). We rely on pull-to-refresh / polling for now.
@@ -25,6 +26,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       }),
     }),
     NotificationsModule,
+    AvailabilityModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService],
