@@ -150,25 +150,32 @@ export class BookingsController {
   }
 
   // ─── CANCELLATION REFUND ESTIMATE ──────────────────────
-  // Matches the Apr 19 policy that's enforced by getCancellationRefund():
-  //   - 2+ hours before slot: 80% of dish amount (visit fee non-refundable)
-  //   - Under 2 hours: no refund
+  // Refund Policy v2 (Apr 26 LOCKED) — Option B: % on TOTAL, platform absorbs chef comp
+  //   ≥24h: 100% refund / chef ₹0
+  //   ≥8h:   75% refund / chef ₹25
+  //   ≥4h:   50% refund / chef ₹50
+  //   ≥2h:   25% refund / chef ₹75
+  //   <2h:    0% refund / chef ₹100
   @Get(':id/refund-estimate')
   async getRefundEstimate(
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const booking = await this.bookingsService.findById(id);
-    const refund = this.bookingsService.getCancellationRefund(booking);
+    const { refund, chefCompensation } =
+      this.bookingsService.getCancellationRefund(booking);
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
 
-    const policy =
-      hoursUntil >= 2
-        ? '80% refund of dish amount (visit fee non-refundable)'
-        : 'No refund (less than 2 hours before session)';
+    let policy: string;
+    if (hoursUntil >= 24) policy = '100% refund — full amount returned';
+    else if (hoursUntil >= 8) policy = '75% refund (chef receives ₹25 compensation)';
+    else if (hoursUntil >= 4) policy = '50% refund (chef receives ₹50 compensation)';
+    else if (hoursUntil >= 2) policy = '25% refund (chef receives ₹75 compensation)';
+    else policy = 'No refund — under 2 hours before session (chef receives ₹100)';
 
     return {
       refund_amount: refund,
+      chef_cancellation_fee: chefCompensation,
       total_price: booking.total_price,
       hours_until_session: Math.round(hoursUntil * 10) / 10,
       policy,

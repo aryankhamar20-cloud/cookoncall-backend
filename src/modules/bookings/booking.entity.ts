@@ -152,6 +152,13 @@ export class Booking {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   refund_amount: number;
 
+  // ─── CHEF COMPENSATION ON CUSTOMER-CANCEL (Refund Policy v2 — Apr 26) ───
+  // Platform pays chef this amount when customer cancels late. Tracked here
+  // for future chef payout ledger (P2 wallet system).
+  // Tiers: ≥24h=₹0, ≥8h=₹25, ≥4h=₹50, ≥2h=₹75, <2h=₹100
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  chef_cancellation_fee: number;
+
   // ─── TIMESTAMPS ──────────────────────────────────────
   @Column({ type: 'timestamptz', nullable: true })
   confirmed_at: Date;

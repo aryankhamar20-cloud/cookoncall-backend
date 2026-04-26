@@ -661,7 +661,11 @@ export class BookingsService {
       case BookingStatus.CANCELLED_BY_USER:
         booking.cancelled_at = now;
         booking.cancellation_reason = dto.cancellation_reason || null;
-        booking.refund_amount = this.getCancellationRefund(booking);
+        {
+          const { refund, chefCompensation } = this.getCancellationRefund(booking);
+          booking.refund_amount = refund;
+          booking.chef_cancellation_fee = chefCompensation;
+        }
         if (booking.cook?.user_id) {
           this.notificationsService
             .notifyBookingCancelled(booking.cook.user_id, bookingId, 'customer')
@@ -673,6 +677,7 @@ export class BookingsService {
         booking.cancelled_at = now;
         booking.cancellation_reason = dto.cancellation_reason || null;
         booking.refund_amount = Number(booking.total_price);
+        booking.chef_cancellation_fee = 0;
         this.notificationsService
           .notifyBookingCancelled(booking.user_id, bookingId, 'chef')
           .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
@@ -898,19 +903,49 @@ export class BookingsService {
     }
   }
 
-  // ─── CANCELLATION REFUND CALCULATION (Apr 19 launch policy) ──────────
-  getCancellationRefund(booking: Booking): number {
+  // ─── CANCELLATION REFUND CALCULATION (Refund Policy v2 — Apr 26 LOCKED) ──
+  // Option B: % applies to TOTAL (visit fee + dishes). Platform absorbs chef
+  // compensation out of what's retained. Min order ₹200 keeps math positive
+  // at every tier.
+  //
+  //   ≥24h before slot  → 100% refund / chef ₹0
+  //   ≥8h  before slot  →  75% refund / chef ₹25
+  //   ≥4h  before slot  →  50% refund / chef ₹50
+  //   ≥2h  before slot  →  25% refund / chef ₹75
+  //   <2h  before slot  →   0% refund / chef ₹100
+  //
+  // Chef-cancel handled separately at call site (100% refund, chef ₹0).
+  getCancellationRefund(booking: Booking): {
+    refund: number;
+    chefCompensation: number;
+  } {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
 
     const total = Number(booking.total_price);
-    const visitFee = Number(booking.visit_fee || 0);
-    const dishAmount = Math.max(total - visitFee, 0);
 
-    if (hoursUntil >= 2) {
-      return Math.round(dishAmount * 0.8 * 100) / 100;
+    let refundPct: number;
+    let chefCompensation: number;
+
+    if (hoursUntil >= 24) {
+      refundPct = 1.0;
+      chefCompensation = 0;
+    } else if (hoursUntil >= 8) {
+      refundPct = 0.75;
+      chefCompensation = 25;
+    } else if (hoursUntil >= 4) {
+      refundPct = 0.5;
+      chefCompensation = 50;
+    } else if (hoursUntil >= 2) {
+      refundPct = 0.25;
+      chefCompensation = 75;
+    } else {
+      refundPct = 0;
+      chefCompensation = 100;
     }
-    return 0;
+
+    const refund = Math.round(total * refundPct * 100) / 100;
+    return { refund, chefCompensation };
   }
 
   // ─── SEND COOKING OTP EMAIL (via Brevo) — unchanged ───

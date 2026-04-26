@@ -139,9 +139,9 @@ export class SubmitVerificationDto {
   @IsNotEmpty()
   aadhaar_url: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  pan_url: string;
+  pan_url?: string;
 
   @IsOptional()
   @IsString()
