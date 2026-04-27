@@ -29,15 +29,6 @@ import {
 @Controller('meal-packages')
 export class MealPackagesController {
   constructor(private readonly svc: MealPackagesService) {}
-
-  // ─── PUBLIC ──────────────────────────────────────────────────────────────
-  // GET /api/v1/meal-packages/cook/:cookId — customer view of a chef's packages
-  @Public()
-  @Get('cook/:cookId')
-  async getPublicPackagesByCook(@Param('cookId') cookId: string) {
-    return this.mealPackagesService.getActivePackagesByCook(cookId);
-  }
-
   @Public()
   @Get('cook/:cookId')
   getCookPackages(@Param('cookId', ParseUUIDPipe) cookId: string) {

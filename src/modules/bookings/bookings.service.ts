@@ -186,7 +186,7 @@ export class BookingsService {
     // Resolve selected addons
     const selectedAddonIds = dto.selectedAddonIds ?? [];
     const activeAddons = (pkg.addons ?? []).filter(
-      (a) => selectedAddonIds.includes(a.id) && a.is_active,
+      (a) => selectedAddonIds.includes(a.id) && a.is_available,
     );
 
     // Calculate price
@@ -229,7 +229,7 @@ export class BookingsService {
       cook_id: dto.cook_id,
       booking_type: BookingType.HOME_COOKING,
       scheduled_at: scheduledDate,
-      duration_hours: dto.duration_hours ?? pkg.estimated_duration ?? 3,
+      duration_hours: dto.duration_hours ?? 3,
       guests: guestCount,
       address: dto.address,
       latitude: dto.latitude,
@@ -984,7 +984,7 @@ export class BookingsService {
           ? await this.mealPackagesRepository.findOne({ where: { id: booking.package_id } })
           : null;
 
-        const ingredientNotes = pkg?.ingredient_notes || null;
+        const ingredientNotes = pkg?.ingredient_note || null;
 
         if (booking.user?.email && ingredientNotes) {
           await this.sendIngredientReminderEmail(
