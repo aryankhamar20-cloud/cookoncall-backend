@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Repository, Between, LessThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Booking, BookingStatus, BookingType } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
@@ -23,20 +23,22 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 import { AvailabilityService } from '../availability/availability.service';
 
+// ⚠️  VERIFY these import paths match your actual P1.5a entity files.
+// If all 4 entities are in a single file, adjust accordingly.
+import { MealPackage } from '../meal-packages/meal-package.entity';
+import { PackageAddon } from '../meal-packages/package-addon.entity';
+
 // ─── Pricing model (Apr 19, 2026 launch) ────────────────────────────────
 const VISIT_FEE_HOME_COOKING = 49;
-const CONVENIENCE_RATE = 0.025;
+const CONVENIENCE_RATE = 0.025; // 2.5% convenience fee charged to customer
 
 // ─── NEW FLOW TIMING (Apr 21, 2026) ─────────────────────────────────────
-// Both windows are 3 hours. On-demand check — no background job.
 const CHEF_APPROVAL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const PAYMENT_WINDOW_MS = 3 * 60 * 60 * 1000;
 
-// Statuses that are eligible for the on-demand expiry sweep.
 const EXPIRABLE_STATUSES: BookingStatus[] = [
   BookingStatus.PENDING_CHEF_APPROVAL,
   BookingStatus.AWAITING_PAYMENT,
-  // Legacy rows created before Apr 21 migration — treated same as PENDING_CHEF_APPROVAL.
   BookingStatus.PENDING,
 ];
 
@@ -56,11 +58,43 @@ export class BookingsService {
     private menuItemsRepository: Repository<MenuItem>,
     @InjectRepository(Payment)
     private paymentsRepository: Repository<Payment>,
+    // ─── P1.5c: Package repositories ─────────────────────
+    @InjectRepository(MealPackage)
+    private mealPackagesRepository: Repository<MealPackage>,
+    @InjectRepository(PackageAddon)
+    private packageAddonsRepository: Repository<PackageAddon>,
     private notificationsService: NotificationsService,
     private configService: ConfigService,
     private availabilityService: AvailabilityService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
+  }
+
+  // ─── PACKAGE PRICE CALCULATION (P1.5c) ───────────────
+  private calculatePackageSubtotal(
+    pkg: MealPackage,
+    guestCount: number,
+    selectedAddons: PackageAddon[],
+  ): number {
+    let basePrice: number;
+
+    if (guestCount <= 2) basePrice = Number(pkg.price_2);
+    else if (guestCount === 3) basePrice = Number(pkg.price_3);
+    else if (guestCount === 4) basePrice = Number(pkg.price_4);
+    else if (guestCount === 5) basePrice = Number(pkg.price_5);
+    else {
+      // Custom tier: price_5 + extra_person_charge per person beyond 5
+      basePrice =
+        Number(pkg.price_5) +
+        (guestCount - 5) * Number(pkg.extra_person_charge || 59);
+    }
+
+    const addonTotal = selectedAddons.reduce(
+      (sum, a) => sum + Number(a.price),
+      0,
+    );
+
+    return basePrice + addonTotal;
   }
 
   // ─── CREATE BOOKING ───────────────────────────────────
@@ -70,30 +104,16 @@ export class BookingsService {
       relations: ['user'],
     });
 
-    if (!cook) {
-      throw new NotFoundException('Cook not found');
-    }
-
-    if (!cook.is_verified) {
-      throw new BadRequestException('Cook is not yet verified');
-    }
-
-    if (!cook.is_available) {
-      throw new BadRequestException('Cook is currently unavailable');
-    }
-
-    if (cook.user_id === userId) {
-      throw new BadRequestException('You cannot book yourself');
-    }
+    if (!cook) throw new NotFoundException('Cook not found');
+    if (!cook.is_verified) throw new BadRequestException('Cook is not yet verified');
+    if (!cook.is_available) throw new BadRequestException('Cook is currently unavailable');
+    if (cook.user_id === userId) throw new BadRequestException('You cannot book yourself');
 
     const scheduledDate = new Date(dto.scheduled_at);
     if (scheduledDate <= new Date()) {
       throw new BadRequestException('Scheduled date must be in the future');
     }
 
-    // ─── AVAILABILITY CHECK (Apr 24, 2026) ────────────
-    // Throws BadRequest if outside window / past min-advance / collides
-    // with another booking on this chef.
     await this.availabilityService.assertSlotAvailable(
       dto.cook_id,
       scheduledDate,
@@ -102,7 +122,176 @@ export class BookingsService {
 
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 
-    // ─── Calculate subtotal from selected menu items ──────────────────────
+    // ═══════════════════════════════════════════════════
+    // BRANCH A — PACKAGE BOOKING (P1.5c)
+    // ═══════════════════════════════════════════════════
+    if (dto.packageId) {
+      return this.createPackageBooking(userId, dto, cook, customer, scheduledDate);
+    }
+
+    // ═══════════════════════════════════════════════════
+    // BRANCH B — BUILD YOUR OWN (existing menu flow)
+    // ═══════════════════════════════════════════════════
+    return this.createMenuBooking(userId, dto, cook, customer, scheduledDate);
+  }
+
+  // ─── PACKAGE BOOKING (P1.5c) ─────────────────────────
+  private async createPackageBooking(
+    userId: string,
+    dto: CreateBookingDto,
+    cook: Cook,
+    customer: User | null,
+    scheduledDate: Date,
+  ) {
+    // Fetch package with full relations
+    const pkg = await this.mealPackagesRepository.findOne({
+      where: { id: dto.packageId, cook_id: dto.cook_id, is_active: true },
+      relations: ['categories', 'categories.dishes', 'addons'],
+    });
+
+    if (!pkg) {
+      throw new NotFoundException('Meal package not found or is no longer active');
+    }
+
+    // Guest count for tier pricing
+    const guestCount = dto.guestCount ?? dto.guests ?? 2;
+    if (guestCount < 2) {
+      throw new BadRequestException('Minimum 2 guests required for a package booking');
+    }
+
+    // Validate category selections against min/max rules
+    if (dto.selectedCategories?.length) {
+      for (const sel of dto.selectedCategories) {
+        const cat = pkg.categories?.find((c) => c.id === sel.categoryId);
+        if (!cat) {
+          throw new BadRequestException(
+            `Category ${sel.categoryId} does not belong to this package`,
+          );
+        }
+        const minSel = cat.min_selections ?? 1;
+        const maxSel = cat.max_selections ?? 1;
+        if (sel.dishIds.length < minSel) {
+          throw new BadRequestException(
+            `"${cat.name}" requires at least ${minSel} dish selection(s)`,
+          );
+        }
+        if (sel.dishIds.length > maxSel) {
+          throw new BadRequestException(
+            `"${cat.name}" allows at most ${maxSel} dish selection(s)`,
+          );
+        }
+      }
+    }
+
+    // Resolve selected addons
+    const selectedAddonIds = dto.selectedAddonIds ?? [];
+    const activeAddons = (pkg.addons ?? []).filter(
+      (a) => selectedAddonIds.includes(a.id) && a.is_active,
+    );
+
+    // Calculate price
+    const pkgSubtotal = this.calculatePackageSubtotal(pkg, guestCount, activeAddons);
+    const visitFee = VISIT_FEE_HOME_COOKING;
+    const convFee = Math.round(pkgSubtotal * CONVENIENCE_RATE);
+    const totalPrice = pkgSubtotal + visitFee + convFee;
+
+    // Build human-readable dish list (for email + booking record)
+    const dishNames: string[] = [];
+    for (const cat of pkg.categories ?? []) {
+      const sel = dto.selectedCategories?.find((s) => s.categoryId === cat.id);
+      if (!sel) continue;
+      for (const dish of cat.dishes ?? []) {
+        if (sel.dishIds.includes(dish.id)) dishNames.push(dish.name);
+      }
+    }
+    for (const addon of activeAddons) dishNames.push(addon.name);
+
+    // Build JSONB payloads for the booking record
+    const selectedCategoriesData = (dto.selectedCategories ?? []).map((sel) => {
+      const cat = pkg.categories?.find((c) => c.id === sel.categoryId);
+      return {
+        categoryId: cat?.id,
+        categoryName: cat?.name,
+        selectedDishes: (cat?.dishes ?? [])
+          .filter((d) => sel.dishIds.includes(d.id))
+          .map((d) => ({ id: d.id, name: d.name, type: d.type })),
+      };
+    });
+
+    const selectedAddonsData = activeAddons.map((a) => ({
+      addonId: a.id,
+      name: a.name,
+      price: Number(a.price),
+    }));
+
+    const booking = this.bookingsRepository.create({
+      user_id: userId,
+      cook_id: dto.cook_id,
+      booking_type: BookingType.HOME_COOKING,
+      scheduled_at: scheduledDate,
+      duration_hours: dto.duration_hours ?? pkg.estimated_duration ?? 3,
+      guests: guestCount,
+      address: dto.address,
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+      dishes: dishNames.join(', '),
+      instructions: dto.instructions,
+      order_items: null,
+      subtotal: pkgSubtotal,
+      platform_fee: convFee,
+      total_price: totalPrice,
+      status: BookingStatus.PENDING_CHEF_APPROVAL,
+      visit_fee: visitFee,
+      platform_fee_percent: 2.5,
+      // ─── Package fields ───────────────────────────────
+      package_id: dto.packageId,
+      is_package_booking: true,
+      selected_categories: selectedCategoriesData,
+      selected_addons: selectedAddonsData,
+      ingredient_reminder_sent: false,
+    });
+
+    const saved = await this.bookingsRepository.save(booking);
+
+    this.notificationsService
+      .notifyBookingCreated(
+        userId,
+        cook.user_id,
+        saved.id,
+        customer?.name || 'A customer',
+      )
+      .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
+
+    if (customer?.email) {
+      this.sendBookingReceiptEmail(
+        customer.email,
+        customer.name || 'Customer',
+        saved.id,
+        cook.user?.name || 'Your Chef',
+        scheduledDate,
+        dto.address,
+        dishNames,
+        pkgSubtotal,
+        visitFee,
+        convFee,
+        totalPrice,
+        booking.duration_hours,
+        guestCount,
+        pkg.name,
+      ).catch((err) => this.logger.warn(`Receipt email failed: ${err.message}`));
+    }
+
+    return this.findById(saved.id);
+  }
+
+  // ─── BUILD YOUR OWN MENU BOOKING (existing logic) ────
+  private async createMenuBooking(
+    userId: string,
+    dto: CreateBookingDto,
+    cook: Cook,
+    customer: User | null,
+    scheduledDate: Date,
+  ) {
     let subtotal: number;
     let orderItemsForDb: Record<string, any>[] | null = null;
     const selectedDishNames: string[] = [];
@@ -111,14 +300,11 @@ export class BookingsService {
       const menuItems = await this.menuItemsRepository.findBy(
         dto.selected_items.map((si) => ({ id: si.menuItemId })),
       );
-
       const menuMap = new Map(menuItems.map((m) => [m.id, m]));
 
       orderItemsForDb = dto.selected_items.map((si) => {
         const item = menuMap.get(si.menuItemId);
-        if (!item) {
-          throw new BadRequestException(`Menu item ${si.menuItemId} not found`);
-        }
+        if (!item) throw new BadRequestException(`Menu item ${si.menuItemId} not found`);
         if (item.cook_id !== dto.cook_id) {
           throw new BadRequestException(`Menu item ${item.name} does not belong to this chef`);
         }
@@ -157,7 +343,6 @@ export class BookingsService {
     const visitFee =
       bookingType === BookingType.HOME_COOKING ? VISIT_FEE_HOME_COOKING : 0;
     const convenienceFee = Math.round(subtotal * CONVENIENCE_RATE);
-    const platformFee = convenienceFee;
     const totalPrice = subtotal + visitFee + convenienceFee;
 
     const booking = this.bookingsRepository.create({
@@ -176,22 +361,20 @@ export class BookingsService {
       instructions: dto.instructions,
       order_items: orderItemsForDb,
       subtotal,
-      platform_fee: platformFee,
+      platform_fee: convenienceFee,
       total_price: totalPrice,
-      // ─── NEW FLOW: customer books → chef must accept first ──
       status: BookingStatus.PENDING_CHEF_APPROVAL,
       visit_fee: visitFee,
       platform_fee_percent: 2.5,
+      is_package_booking: false,
     });
 
     const saved = await this.bookingsRepository.save(booking);
 
-    // ─── NOTIFY: Booking created → chef + customer ───
     this.notificationsService
       .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
       .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
 
-    // ─── SEND BOOKING RECEIPT EMAIL → customer ───
     if (customer?.email) {
       this.sendBookingReceiptEmail(
         customer.email,
@@ -200,10 +383,12 @@ export class BookingsService {
         cook.user?.name || 'Your Chef',
         scheduledDate,
         dto.address,
-        selectedDishNames.length > 0 ? selectedDishNames : (dto.dishes ? dto.dishes.split(',').map(d => d.trim()) : []),
+        selectedDishNames.length > 0
+          ? selectedDishNames
+          : (dto.dishes ? dto.dishes.split(',').map((d) => d.trim()) : []),
         subtotal,
         visitFee,
-        platformFee,
+        convenienceFee,
         totalPrice,
         dto.duration_hours || 2,
         dto.guests || 2,
@@ -215,7 +400,6 @@ export class BookingsService {
 
   // ─── GET USER BOOKINGS ────────────────────────────────
   async getUserBookings(userId: string, dto: GetBookingsDto) {
-    // On-demand expiry pass BEFORE reading
     await this.sweepExpiryForUser(userId);
 
     const page = dto.page || 1;
@@ -236,8 +420,6 @@ export class BookingsService {
     }
 
     const [bookings, total] = await qb.getManyAndCount();
-
-    // Strip rejection_reason from each — never leak it to the customer.
     const sanitized = bookings.map((b) => this.stripInternalFields(b));
 
     return {
@@ -246,17 +428,13 @@ export class BookingsService {
     };
   }
 
-  // ─── GET COOK BOOKINGS (REQUESTS) ─────────────────────
+  // ─── GET COOK BOOKINGS ────────────────────────────────
   async getCookBookings(userId: string, dto: GetBookingsDto) {
     const cook = await this.cooksRepository.findOne({
       where: { user_id: userId },
     });
+    if (!cook) throw new NotFoundException('Cook profile not found');
 
-    if (!cook) {
-      throw new NotFoundException('Cook profile not found');
-    }
-
-    // On-demand expiry pass BEFORE reading
     await this.sweepExpiryForCook(cook.id);
 
     const page = dto.page || 1;
@@ -289,31 +467,19 @@ export class BookingsService {
       where: { id },
       relations: ['user', 'cook', 'cook.user'],
     });
-
-    if (!booking) {
-      throw new NotFoundException('Booking not found');
-    }
-
+    if (!booking) throw new NotFoundException('Booking not found');
     return booking;
   }
 
-  /**
-   * Same as findById but strips rejection_reason for customer-facing endpoints.
-   * Use this when the requester is the customer (not admin, not chef).
-   */
   async findByIdForCustomer(id: string) {
     const b = await this.findById(id);
     return this.stripInternalFields(b);
   }
 
   // ═══════════════════════════════════════════════════════
-  // NEW FLOW: CHEF ACCEPT / REJECT
+  // CHEF ACCEPT / REJECT
   // ═══════════════════════════════════════════════════════
 
-  /**
-   * Chef accepts a booking → status becomes AWAITING_PAYMENT.
-   * Customer has 3 hours to pay.
-   */
   async acceptBooking(bookingId: string, userId: string) {
     const booking = await this.findById(bookingId);
 
@@ -322,7 +488,6 @@ export class BookingsService {
       throw new ForbiddenException('Only the assigned chef can accept this booking');
     }
 
-    // Run expiry check — chef might be accepting too late
     const maybeExpired = await this.expireIfLapsed(booking);
     if (maybeExpired.status === BookingStatus.EXPIRED) {
       throw new BadRequestException('This booking has expired and can no longer be accepted');
@@ -330,7 +495,7 @@ export class BookingsService {
 
     if (
       booking.status !== BookingStatus.PENDING_CHEF_APPROVAL &&
-      booking.status !== BookingStatus.PENDING // legacy rows
+      booking.status !== BookingStatus.PENDING
     ) {
       throw new BadRequestException(
         `Cannot accept a booking in status "${booking.status}"`,
@@ -344,7 +509,6 @@ export class BookingsService {
 
     await this.bookingsRepository.save(booking);
 
-    // ─── NOTIFY: Chef accepted → customer (in-app + email) ───
     this.notificationsService
       .notifyChefAccepted(
         booking.user_id,
@@ -357,10 +521,6 @@ export class BookingsService {
     return this.findById(bookingId);
   }
 
-  /**
-   * Chef rejects a booking with a reason.
-   * Reason stays internal — customer is NEVER shown the reason.
-   */
   async rejectBooking(bookingId: string, userId: string, dto: RejectBookingDto) {
     const booking = await this.findById(bookingId);
 
@@ -371,7 +531,7 @@ export class BookingsService {
 
     if (
       booking.status !== BookingStatus.PENDING_CHEF_APPROVAL &&
-      booking.status !== BookingStatus.PENDING // legacy rows
+      booking.status !== BookingStatus.PENDING
     ) {
       throw new BadRequestException(
         `Cannot reject a booking in status "${booking.status}"`,
@@ -382,12 +542,11 @@ export class BookingsService {
     booking.status = BookingStatus.CANCELLED_BY_COOK;
     booking.cancelled_at = now;
     booking.chef_responded_at = now;
-    booking.rejection_reason = dto.reason; // internal only
-    booking.cancellation_reason = null; // keep separate from customer-visible cancel reason
+    booking.rejection_reason = dto.reason;
+    booking.cancellation_reason = null;
 
     await this.bookingsRepository.save(booking);
 
-    // ─── NOTIFY: Chef rejected → customer (NO reason) ───
     this.notificationsService
       .notifyChefRejected(
         booking.user_id,
@@ -397,21 +556,13 @@ export class BookingsService {
       )
       .catch((err) => this.logger.warn(`Reject notification failed: ${err.message}`));
 
-    // Return customer-safe view (no rejection_reason) — but the chef is calling
-    // this endpoint. It is still safe to strip; chef didn't need it echoed back.
     return this.stripInternalFields(booking);
   }
 
   // ═══════════════════════════════════════════════════════
-  // NEW FLOW: REBOOK WITH A DIFFERENT CHEF
+  // REBOOK WITH A DIFFERENT CHEF
   // ═══════════════════════════════════════════════════════
 
-  /**
-   * Customer picks "Book another chef" after rejection/expiry.
-   * Creates a brand new booking with new cook_id + freshly selected dishes,
-   * carrying over scheduled_at, guests, duration_hours, address.
-   * Links the old booking to the new one via rebooked_to_id.
-   */
   async rebookWithDifferentChef(
     originalBookingId: string,
     userId: string,
@@ -427,9 +578,7 @@ export class BookingsService {
       original.status === BookingStatus.CANCELLED_BY_COOK ||
       original.status === BookingStatus.EXPIRED;
     if (!isEligible) {
-      throw new BadRequestException(
-        'Only rejected or expired bookings can be rebooked',
-      );
+      throw new BadRequestException('Only rejected or expired bookings can be rebooked');
     }
 
     if (original.rebooked_to_id) {
@@ -440,8 +589,6 @@ export class BookingsService {
       throw new BadRequestException('Please choose a different chef');
     }
 
-    // Create new booking using the customer-facing flow. Date/address/guests
-    // carry over; dishes + chef are fresh.
     const created = await this.createBooking(userId, {
       cook_id: dto.new_cook_id,
       booking_type: original.booking_type,
@@ -455,7 +602,6 @@ export class BookingsService {
       selected_items: dto.selected_items,
     });
 
-    // Link original → new for admin audit trail
     await this.bookingsRepository.update(originalBookingId, {
       rebooked_to_id: created.id,
     });
@@ -464,19 +610,14 @@ export class BookingsService {
   }
 
   // ═══════════════════════════════════════════════════════
-  // ON-DEMAND EXPIRY (no background job)
+  // ON-DEMAND EXPIRY
   // ═══════════════════════════════════════════════════════
 
-  /**
-   * Expire a single booking if its window has lapsed.
-   * Returns the booking (updated if expired, unchanged otherwise).
-   */
   async expireIfLapsed(booking: Booking): Promise<Booking> {
     if (!EXPIRABLE_STATUSES.includes(booking.status)) return booking;
 
     const now = Date.now();
 
-    // Chef approval window: 3h from created_at
     if (
       booking.status === BookingStatus.PENDING_CHEF_APPROVAL ||
       booking.status === BookingStatus.PENDING
@@ -486,13 +627,11 @@ export class BookingsService {
         booking.status = BookingStatus.EXPIRED;
         booking.cancelled_at = new Date();
         await this.bookingsRepository.save(booking);
-        // Notify both customer AND chef
         this.fireExpiryNotifications(booking).catch(() => undefined);
       }
       return booking;
     }
 
-    // Payment window: 3h from chef_responded_at (or fall back to payment_expires_at)
     if (booking.status === BookingStatus.AWAITING_PAYMENT) {
       const deadlineMs = booking.payment_expires_at
         ? new Date(booking.payment_expires_at).getTime()
@@ -510,7 +649,6 @@ export class BookingsService {
     return booking;
   }
 
-  /** Sweep all customer-owned bookings for expiry before returning a list */
   private async sweepExpiryForUser(userId: string): Promise<void> {
     const candidates = await this.bookingsRepository.find({
       where: { user_id: userId, status: In(EXPIRABLE_STATUSES) },
@@ -523,7 +661,6 @@ export class BookingsService {
     }
   }
 
-  /** Sweep all cook-owned bookings for expiry before returning a list */
   private async sweepExpiryForCook(cookId: string): Promise<void> {
     const candidates = await this.bookingsRepository.find({
       where: { cook_id: cookId, status: In(EXPIRABLE_STATUSES) },
@@ -537,14 +674,12 @@ export class BookingsService {
   }
 
   private async fireExpiryNotifications(booking: Booking) {
-    // Customer always notified
     await this.notificationsService.notifyBookingExpired(
       booking.user_id,
       booking.user?.email || null,
       booking.id,
       'customer',
     );
-    // Chef notified
     if (booking.cook?.user_id) {
       await this.notificationsService.notifyBookingExpired(
         booking.cook.user_id,
@@ -555,16 +690,13 @@ export class BookingsService {
     }
   }
 
-  /** Remove internal-only fields before returning to customer endpoints */
   private stripInternalFields(b: Booking): Booking {
-    // Return a shallow copy with sensitive field nulled.
     const safe: any = { ...b };
     safe.rejection_reason = null;
     return safe as Booking;
   }
 
   // ─── UPDATE BOOKING STATUS ────────────────────────────
-  // Kept for backward-compat (cancel flows, admin overrides, etc.)
   async updateStatus(
     bookingId: string,
     userId: string,
@@ -584,24 +716,14 @@ export class BookingsService {
       throw new ForbiddenException('Not authorized to update this booking');
     }
 
-    this.validateStatusTransition(
-      booking.status,
-      dto.status,
-      isUser,
-      isCook,
-      isAdmin,
-    );
+    this.validateStatusTransition(booking.status, dto.status, isUser, isCook, isAdmin);
 
-    // NEW FLOW: chef is no longer allowed to transition to CONFIRMED here.
-    // Chef uses /accept which goes to AWAITING_PAYMENT.
-    // Payment capture is what moves AWAITING_PAYMENT → CONFIRMED.
     if (dto.status === BookingStatus.CONFIRMED && !isAdmin) {
       throw new ForbiddenException(
         'Booking can only be confirmed by payment capture. Chef must use /accept.',
       );
     }
 
-    // Admin override path: if admin forces CONFIRMED, still require a captured payment.
     if (dto.status === BookingStatus.CONFIRMED && isAdmin) {
       const payment = await this.paymentsRepository.findOne({
         where: { booking_id: bookingId, status: PaymentStatus.CAPTURED },
@@ -612,8 +734,8 @@ export class BookingsService {
     }
 
     booking.status = dto.status;
-
     const now = new Date();
+
     switch (dto.status) {
       case BookingStatus.CONFIRMED:
         booking.confirmed_at = now;
@@ -685,12 +807,11 @@ export class BookingsService {
     }
 
     await this.bookingsRepository.save(booking);
-
     return this.findById(bookingId);
   }
 
   // ═══════════════════════════════════════════════════════
-  // COOKING SESSION OTP (unchanged)
+  // COOKING SESSION OTP
   // ═══════════════════════════════════════════════════════
 
   async sendStartOtp(bookingId: string, userId: string) {
@@ -700,7 +821,6 @@ export class BookingsService {
     if (!cook || booking.cook_id !== cook.id) {
       throw new ForbiddenException('Only the assigned chef can start this session');
     }
-
     if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException('Booking must be confirmed before starting');
     }
@@ -726,15 +846,12 @@ export class BookingsService {
     if (!cook || booking.cook_id !== cook.id) {
       throw new ForbiddenException('Only the assigned chef can verify this OTP');
     }
-
     if (!booking.start_otp || !booking.start_otp_expires_at) {
       throw new BadRequestException('No start OTP requested');
     }
-
     if (new Date() > booking.start_otp_expires_at) {
       throw new BadRequestException('Start OTP expired. Please request a new one.');
     }
-
     if (booking.start_otp !== otp) {
       throw new BadRequestException('Invalid OTP');
     }
@@ -763,7 +880,6 @@ export class BookingsService {
     if (!cook || booking.cook_id !== cook.id) {
       throw new ForbiddenException('Only the assigned chef can end this session');
     }
-
     if (booking.status !== BookingStatus.IN_PROGRESS) {
       throw new BadRequestException('Session must be in progress to end it');
     }
@@ -789,15 +905,12 @@ export class BookingsService {
     if (!cook || booking.cook_id !== cook.id) {
       throw new ForbiddenException('Only the assigned chef can verify this OTP');
     }
-
     if (!booking.end_otp || !booking.end_otp_expires_at) {
       throw new BadRequestException('No end OTP requested');
     }
-
     if (new Date() > booking.end_otp_expires_at) {
       throw new BadRequestException('End OTP expired. Please request a new one.');
     }
-
     if (booking.end_otp !== otp) {
       throw new BadRequestException('Invalid OTP');
     }
@@ -843,6 +956,59 @@ export class BookingsService {
     };
   }
 
+  // ═══════════════════════════════════════════════════════
+  // P1.5d — INGREDIENT REMINDER (called by SchedulerService cron)
+  // Finds confirmed package bookings scheduled ~2h from now that
+  // haven't had a reminder sent, sends ingredient email, marks flag.
+  // ═══════════════════════════════════════════════════════
+  async sendIngredientReminders(): Promise<void> {
+    const now = new Date();
+    // Window: bookings starting between now+1h45m and now+2h15m
+    const windowStart = new Date(now.getTime() + 105 * 60 * 1000); // now + 1h45m
+    const windowEnd = new Date(now.getTime() + 135 * 60 * 1000);   // now + 2h15m
+
+    const bookings = await this.bookingsRepository.find({
+      where: {
+        status: BookingStatus.CONFIRMED,
+        is_package_booking: true,
+        ingredient_reminder_sent: false,
+        scheduled_at: Between(windowStart, windowEnd),
+      },
+      relations: ['user', 'cook', 'cook.user'],
+    });
+
+    for (const booking of bookings) {
+      try {
+        // Fetch the package to get ingredient_notes
+        const pkg = booking.package_id
+          ? await this.mealPackagesRepository.findOne({ where: { id: booking.package_id } })
+          : null;
+
+        const ingredientNotes = pkg?.ingredient_notes || null;
+
+        if (booking.user?.email && ingredientNotes) {
+          await this.sendIngredientReminderEmail(
+            booking.user.email,
+            booking.user.name || 'Customer',
+            booking.cook?.user?.name || 'Your Chef',
+            booking.scheduled_at,
+            ingredientNotes,
+            booking.id,
+          );
+        }
+
+        // Mark sent so cron doesn't double-fire
+        await this.bookingsRepository.update(booking.id, {
+          ingredient_reminder_sent: true,
+        });
+
+        this.logger.log(`Ingredient reminder sent for booking ${booking.id}`);
+      } catch (err) {
+        this.logger.warn(`Ingredient reminder failed for ${booking.id}: ${err?.message}`);
+      }
+    }
+  }
+
   // ─── STATUS TRANSITION VALIDATION ─────────────────────
   private validateStatusTransition(
     current: BookingStatus,
@@ -864,10 +1030,9 @@ export class BookingsService {
         BookingStatus.CANCELLED_BY_COOK,
         BookingStatus.EXPIRED,
       ],
-      // Legacy: still accepted so old pending rows can be moved forward
       [BookingStatus.PENDING]: [
         BookingStatus.AWAITING_PAYMENT,
-        BookingStatus.CONFIRMED, // admin-only path
+        BookingStatus.CONFIRMED,
         BookingStatus.CANCELLED_BY_USER,
         BookingStatus.CANCELLED_BY_COOK,
         BookingStatus.EXPIRED,
@@ -885,70 +1050,111 @@ export class BookingsService {
     };
 
     if (!allowed[current]?.includes(next)) {
-      throw new BadRequestException(
-        `Cannot transition from ${current} to ${next}`,
-      );
+      throw new BadRequestException(`Cannot transition from ${current} to ${next}`);
     }
-
     if (next === BookingStatus.CANCELLED_BY_USER && !isUser && !isAdmin) {
       throw new ForbiddenException('Only the customer can cancel as user');
     }
-
     if (next === BookingStatus.CANCELLED_BY_COOK && !isCook && !isAdmin) {
       throw new ForbiddenException('Only the cook can cancel as cook');
     }
-
     if (next === BookingStatus.COMPLETED && !isAdmin) {
       throw new ForbiddenException('Session completion requires end OTP verification');
     }
   }
 
-  // ─── CANCELLATION REFUND CALCULATION (Refund Policy v2 — Apr 26 LOCKED) ──
-  // Option B: % applies to TOTAL (visit fee + dishes). Platform absorbs chef
-  // compensation out of what's retained. Min order ₹200 keeps math positive
-  // at every tier.
-  //
-  //   ≥24h before slot  → 100% refund / chef ₹0
-  //   ≥8h  before slot  →  75% refund / chef ₹25
-  //   ≥4h  before slot  →  50% refund / chef ₹50
-  //   ≥2h  before slot  →  25% refund / chef ₹75
-  //   <2h  before slot  →   0% refund / chef ₹100
-  //
-  // Chef-cancel handled separately at call site (100% refund, chef ₹0).
+  // ─── CANCELLATION REFUND (Refund Policy v2 — LOCKED) ─
   getCancellationRefund(booking: Booking): {
     refund: number;
     chefCompensation: number;
   } {
     const hoursUntil =
       (new Date(booking.scheduled_at).getTime() - Date.now()) / (1000 * 60 * 60);
-
     const total = Number(booking.total_price);
 
     let refundPct: number;
     let chefCompensation: number;
 
-    if (hoursUntil >= 24) {
-      refundPct = 1.0;
-      chefCompensation = 0;
-    } else if (hoursUntil >= 8) {
-      refundPct = 0.75;
-      chefCompensation = 25;
-    } else if (hoursUntil >= 4) {
-      refundPct = 0.5;
-      chefCompensation = 50;
-    } else if (hoursUntil >= 2) {
-      refundPct = 0.25;
-      chefCompensation = 75;
-    } else {
-      refundPct = 0;
-      chefCompensation = 100;
-    }
+    if (hoursUntil >= 24) { refundPct = 1.0; chefCompensation = 0; }
+    else if (hoursUntil >= 8) { refundPct = 0.75; chefCompensation = 25; }
+    else if (hoursUntil >= 4) { refundPct = 0.5; chefCompensation = 50; }
+    else if (hoursUntil >= 2) { refundPct = 0.25; chefCompensation = 75; }
+    else { refundPct = 0; chefCompensation = 100; }
 
     const refund = Math.round(total * refundPct * 100) / 100;
     return { refund, chefCompensation };
   }
 
-  // ─── SEND COOKING OTP EMAIL (via Brevo) — unchanged ───
+  // ─── INGREDIENT REMINDER EMAIL (P1.5d) ───────────────
+  private async sendIngredientReminderEmail(
+    email: string,
+    customerName: string,
+    chefName: string,
+    scheduledAt: Date,
+    ingredientNotes: string,
+    bookingId: string,
+  ) {
+    if (!this.brevoApiKey) {
+      this.logger.warn(`BREVO_API_KEY not set — skipping ingredient reminder for ${email}`);
+      return;
+    }
+
+    const timeStr = scheduledAt.toLocaleTimeString('en-IN', {
+      hour: '2-digit', minute: '2-digit',
+    });
+    const dateStr = scheduledAt.toLocaleDateString('en-IN', {
+      weekday: 'long', day: 'numeric', month: 'long',
+    });
+    const shortId = bookingId.slice(0, 8).toUpperCase();
+
+    // Render ingredient list as HTML
+    const ingredientHtml = ingredientNotes
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => `<li style="padding:3px 0;color:#5D4E37;">${line.trim()}</li>`)
+      .join('');
+
+    const html = `
+      <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;background:#FFF8F0;border-radius:16px;padding:40px 32px;border:1px solid #FFE4B5;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="font-weight:900;font-size:24px;color:#2D1810;">COOK</span><span style="font-weight:900;font-size:24px;color:#D4721A;">ONCALL</span>
+        </div>
+        <h2 style="text-align:center;color:#2D1810;font-size:20px;margin-bottom:8px;">🛒 Ingredient List — Session in 2 Hours!</h2>
+        <p style="text-align:center;color:#8B7355;font-size:14px;margin-bottom:20px;">
+          Hi ${customerName}! <strong>${chefName}</strong> is arriving today (${dateStr}) at <strong>${timeStr}</strong> (Booking #${shortId}).<br/>Please ensure these ingredients are ready at home.
+        </p>
+        <div style="background:white;border-radius:12px;padding:20px;border:1px solid #FFE4B5;margin-bottom:20px;">
+          <h3 style="color:#2D1810;font-size:15px;margin:0 0 12px;">🥘 Ingredients Needed</h3>
+          <ul style="margin:0;padding-left:20px;font-size:14px;line-height:1.8;">
+            ${ingredientHtml || '<li style="color:#8B7355;">Chef will carry all ingredients.</li>'}
+          </ul>
+        </div>
+        <div style="background:rgba(212,114,26,0.06);border-radius:10px;padding:14px;font-size:13px;color:#8B7355;line-height:1.6;">
+          <strong style="color:#2D1810;">CookOnCall HYBRID model</strong> — Chef brings their tools &amp; expertise; you provide ingredients at actual market cost (with receipt). This keeps your food fresh &amp; cost transparent.
+        </div>
+        <hr style="border:none;border-top:1px solid #FFE4B5;margin:24px 0;"/>
+        <p style="text-align:center;color:#B0A090;font-size:11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
+      </div>
+    `;
+
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
+      body: JSON.stringify({
+        sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
+        to: [{ email }],
+        subject: `🛒 Ingredients Needed — Your Chef Arrives in 2 Hours! (#${shortId})`,
+        htmlContent: html,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      this.logger.error(`Brevo ingredient reminder error: ${JSON.stringify(err)}`);
+    }
+  }
+
+  // ─── SEND COOKING OTP EMAIL ───────────────────────────
   private async sendCookingOtpEmail(
     email: string,
     otp: string,
@@ -961,55 +1167,42 @@ export class BookingsService {
     }
 
     const isStart = type === 'start';
-    const subject = isStart
-      ? 'Your Cooking Session OTP - Start'
-      : 'Your Cooking Session OTP - End';
-
+    const subject = isStart ? 'Your Cooking Session OTP - Start' : 'Your Cooking Session OTP - End';
     const heading = isStart ? 'Cooking Session Starting!' : 'Cooking Session Ending';
     const message = isStart
       ? `${chefName} is ready to start cooking! Share this OTP with your chef to begin the session.`
       : `${chefName} has finished cooking. Share this OTP with your chef to end the session.`;
 
     const html = `
-      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
-        <div style="text-align: center; margin-bottom: 24px;">
-          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+      <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;background:#FFF8F0;border-radius:16px;padding:40px 32px;border:1px solid #FFE4B5;">
+        <div style="text-align:center;margin-bottom:24px;">
+          <span style="font-weight:900;font-size:24px;color:#2D1810;">COOK</span><span style="font-weight:900;font-size:24px;color:#D4721A;">ONCALL</span>
         </div>
-        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">${heading}</h2>
-        <p style="text-align: center; color: #8B7355; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">${message}</p>
-        <div style="background: white; border-radius: 12px; padding: 20px; text-align: center; border: 2px dashed #FFB347; margin-bottom: 24px;">
-          <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #D4721A;">${otp}</div>
-          <div style="font-size: 12px; color: #8B7355; margin-top: 8px;">Valid for 10 minutes</div>
+        <h2 style="text-align:center;color:#2D1810;font-size:20px;margin-bottom:8px;">${heading}</h2>
+        <p style="text-align:center;color:#8B7355;font-size:14px;line-height:1.6;margin-bottom:24px;">${message}</p>
+        <div style="background:white;border-radius:12px;padding:20px;text-align:center;border:2px dashed #FFB347;margin-bottom:24px;">
+          <div style="font-size:36px;font-weight:900;letter-spacing:8px;color:#D4721A;">${otp}</div>
+          <div style="font-size:12px;color:#8B7355;margin-top:8px;">Valid for 10 minutes</div>
         </div>
-        <p style="text-align: center; color: #B0A090; font-size: 12px;">Do not share this OTP with anyone other than your chef.</p>
-        <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
-        <p style="text-align: center; color: #B0A090; font-size: 11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
+        <p style="text-align:center;color:#B0A090;font-size:12px;">Do not share this OTP with anyone other than your chef.</p>
+        <hr style="border:none;border-top:1px solid #FFE4B5;margin:24px 0;"/>
+        <p style="text-align:center;color:#B0A090;font-size:11px;">&copy; ${new Date().getFullYear()} CookOnCall</p>
       </div>
     `;
 
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
-        body: JSON.stringify({
-          sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
-          to: [{ email }],
-          subject,
-          htmlContent: html,
-        }),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        this.logger.log(`Cooking OTP (${type}) sent to ${email} — messageId: ${result.messageId}`);
-      } else {
-        this.logger.error(`Brevo error for cooking OTP: ${JSON.stringify(result)}`);
-      }
-    } catch (error) {
-      this.logger.error(`Failed to send cooking OTP to ${email}`, error);
-    }
+    await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
+      body: JSON.stringify({
+        sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
+        to: [{ email }],
+        subject,
+        htmlContent: html,
+      }),
+    });
   }
 
-  // ─── SEND BOOKING RECEIPT EMAIL (via Brevo) — unchanged except copy ──
+  // ─── BOOKING RECEIPT EMAIL ────────────────────────────
   private async sendBookingReceiptEmail(
     email: string,
     customerName: string,
@@ -1024,11 +1217,9 @@ export class BookingsService {
     total: number,
     durationHours: number,
     guests: number,
+    packageName?: string,
   ) {
-    if (!this.brevoApiKey) {
-      this.logger.warn(`BREVO_API_KEY not configured — skipping receipt email for ${email}`);
-      return;
-    }
+    if (!this.brevoApiKey) return;
 
     const dateStr = scheduledAt.toLocaleDateString('en-IN', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -1036,74 +1227,63 @@ export class BookingsService {
     const timeStr = scheduledAt.toLocaleTimeString('en-IN', {
       hour: '2-digit', minute: '2-digit',
     });
-
     const dishListHtml = dishes.length > 0
-      ? dishes.map((d) => `<li style="padding: 4px 0; color: #5D4E37;">${d}</li>`).join('')
-      : '<li style="padding: 4px 0; color: #8B7355;">As discussed with chef</li>';
-
+      ? dishes.map((d) => `<li style="padding:4px 0;color:#5D4E37;">${d}</li>`).join('')
+      : '<li style="padding:4px 0;color:#8B7355;">As discussed with chef</li>';
     const shortId = bookingId.slice(0, 8).toUpperCase();
 
+    const packageRow = packageName
+      ? `<tr><td style="padding:8px 0;color:#8B7355;">Package</td><td style="padding:8px 0;color:#2D1810;font-weight:600;">${packageName}</td></tr>`
+      : '';
+
     const html = `
-      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; background: #FFF8F0; border-radius: 16px; padding: 40px 32px; border: 1px solid #FFE4B5;">
-        <div style="text-align: center; margin-bottom: 24px;">
-          <span style="font-weight: 900; font-size: 24px; color: #2D1810;">COOK</span><span style="font-weight: 900; font-size: 24px; color: #D4721A;">ONCALL</span>
+      <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;background:#FFF8F0;border-radius:16px;padding:40px 32px;border:1px solid #FFE4B5;">
+        <div style="text-align:center;margin-bottom:24px;">
+          <span style="font-weight:900;font-size:24px;color:#2D1810;">COOK</span><span style="font-weight:900;font-size:24px;color:#D4721A;">ONCALL</span>
         </div>
-        <h2 style="text-align: center; color: #2D1810; font-size: 20px; margin-bottom: 8px;">Booking Request Received</h2>
-        <p style="text-align: center; color: #8B7355; font-size: 14px; margin-bottom: 24px;">
-          Thank you, ${customerName}! Your request has been sent to the chef.
-        </p>
-        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
-          <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
-            <tr><td style="padding: 8px 0; color: #8B7355; width: 40%;">Booking ID</td><td style="padding: 8px 0; color: #2D1810; font-weight: 600;">#${shortId}</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355;">Chef</td><td style="padding: 8px 0; color: #2D1810; font-weight: 600;">${chefName}</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355;">Date</td><td style="padding: 8px 0; color: #2D1810;">${dateStr}</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355;">Time</td><td style="padding: 8px 0; color: #2D1810;">${timeStr}</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355;">Duration</td><td style="padding: 8px 0; color: #2D1810;">${durationHours} hours</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355;">Guests</td><td style="padding: 8px 0; color: #2D1810;">${guests}</td></tr>
-            <tr><td style="padding: 8px 0; color: #8B7355; vertical-align: top;">Address</td><td style="padding: 8px 0; color: #2D1810;">${address}</td></tr>
+        <h2 style="text-align:center;color:#2D1810;font-size:20px;margin-bottom:8px;">Booking Request Received</h2>
+        <p style="text-align:center;color:#8B7355;font-size:14px;margin-bottom:24px;">Thank you, ${customerName}! Your request has been sent to the chef.</p>
+        <div style="background:white;border-radius:12px;padding:20px;border:1px solid #FFE4B5;margin-bottom:16px;">
+          <table style="width:100%;font-size:14px;border-collapse:collapse;">
+            <tr><td style="padding:8px 0;color:#8B7355;width:40%;">Booking ID</td><td style="padding:8px 0;color:#2D1810;font-weight:600;">#${shortId}</td></tr>
+            <tr><td style="padding:8px 0;color:#8B7355;">Chef</td><td style="padding:8px 0;color:#2D1810;font-weight:600;">${chefName}</td></tr>
+            ${packageRow}
+            <tr><td style="padding:8px 0;color:#8B7355;">Date</td><td style="padding:8px 0;color:#2D1810;">${dateStr}</td></tr>
+            <tr><td style="padding:8px 0;color:#8B7355;">Time</td><td style="padding:8px 0;color:#2D1810;">${timeStr}</td></tr>
+            <tr><td style="padding:8px 0;color:#8B7355;">Duration</td><td style="padding:8px 0;color:#2D1810;">${durationHours} hours</td></tr>
+            <tr><td style="padding:8px 0;color:#8B7355;">Guests</td><td style="padding:8px 0;color:#2D1810;">${guests}</td></tr>
+            <tr><td style="padding:8px 0;color:#8B7355;vertical-align:top;">Address</td><td style="padding:8px 0;color:#2D1810;">${address}</td></tr>
           </table>
         </div>
-        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 16px;">
-          <h3 style="color: #2D1810; font-size: 15px; margin: 0 0 12px;">Selected Dishes</h3>
-          <ul style="margin: 0; padding-left: 20px; font-size: 14px;">${dishListHtml}</ul>
+        <div style="background:white;border-radius:12px;padding:20px;border:1px solid #FFE4B5;margin-bottom:16px;">
+          <h3 style="color:#2D1810;font-size:15px;margin:0 0 12px;">Selected Dishes</h3>
+          <ul style="margin:0;padding-left:20px;font-size:14px;">${dishListHtml}</ul>
         </div>
-        <div style="background: white; border-radius: 12px; padding: 20px; border: 1px solid #FFE4B5; margin-bottom: 24px;">
-          <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
-            <tr><td style="padding: 6px 0; color: #8B7355;">Subtotal</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${subtotal.toFixed(2)}</td></tr>
-            ${visitFee > 0 ? `<tr><td style="padding: 6px 0; color: #8B7355;">Visit fee</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${visitFee.toFixed(2)}</td></tr>` : ''}
-            <tr><td style="padding: 6px 0; color: #8B7355;">Convenience fee (2.5%)</td><td style="padding: 6px 0; color: #2D1810; text-align: right;">&#8377;${platformFee.toFixed(2)}</td></tr>
-            <tr><td colspan="2"><hr style="border: none; border-top: 1px dashed #FFE4B5; margin: 8px 0;" /></td></tr>
-            <tr><td style="padding: 6px 0; color: #2D1810; font-weight: 700; font-size: 16px;">Total</td><td style="padding: 6px 0; color: #D4721A; font-weight: 700; font-size: 16px; text-align: right;">&#8377;${total.toFixed(2)}</td></tr>
-            <tr><td colspan="2" style="padding: 6px 0; color: #8B7355; font-size: 11px; font-style: italic;">+ Ingredients at actual market cost (with receipt)</td></tr>
+        <div style="background:white;border-radius:12px;padding:20px;border:1px solid #FFE4B5;margin-bottom:24px;">
+          <table style="width:100%;font-size:14px;border-collapse:collapse;">
+            <tr><td style="padding:6px 0;color:#8B7355;">Subtotal</td><td style="padding:6px 0;color:#2D1810;text-align:right;">&#8377;${subtotal.toFixed(2)}</td></tr>
+            ${visitFee > 0 ? `<tr><td style="padding:6px 0;color:#8B7355;">Visit fee</td><td style="padding:6px 0;color:#2D1810;text-align:right;">&#8377;${visitFee.toFixed(2)}</td></tr>` : ''}
+            <tr><td style="padding:6px 0;color:#8B7355;">Convenience fee (2.5%)</td><td style="padding:6px 0;color:#2D1810;text-align:right;">&#8377;${platformFee.toFixed(2)}</td></tr>
+            <tr><td colspan="2"><hr style="border:none;border-top:1px dashed #FFE4B5;margin:8px 0;"/></td></tr>
+            <tr><td style="padding:6px 0;color:#2D1810;font-weight:700;font-size:16px;">Total</td><td style="padding:6px 0;color:#D4721A;font-weight:700;font-size:16px;text-align:right;">&#8377;${total.toFixed(2)}</td></tr>
+            <tr><td colspan="2" style="padding:6px 0;color:#8B7355;font-size:11px;font-style:italic;">+ Ingredients at actual market cost (with receipt)</td></tr>
           </table>
         </div>
-        <p style="text-align: center; color: #8B7355; font-size: 13px; line-height: 1.6; margin-bottom: 16px;">
-          Your chef has 3 hours to accept or decline. Payment will only be requested after the chef accepts.
-        </p>
-        <hr style="border: none; border-top: 1px solid #FFE4B5; margin: 24px 0;" />
-        <p style="text-align: center; color: #B0A090; font-size: 11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
+        <p style="text-align:center;color:#8B7355;font-size:13px;line-height:1.6;margin-bottom:16px;">Your chef has 3 hours to accept or decline. Payment will only be requested after the chef accepts.</p>
+        <hr style="border:none;border-top:1px solid #FFE4B5;margin:24px 0;"/>
+        <p style="text-align:center;color:#B0A090;font-size:11px;">&copy; ${new Date().getFullYear()} CookOnCall &middot; Ahmedabad, Gujarat, India</p>
       </div>
     `;
 
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
-        body: JSON.stringify({
-          sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
-          to: [{ email }],
-          subject: `Booking Request — #${shortId} | CookOnCall`,
-          htmlContent: html,
-        }),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        this.logger.log(`Booking receipt sent to ${email} — bookingId: ${bookingId}`);
-      } else {
-        this.logger.error(`Brevo error for receipt: ${JSON.stringify(result)}`);
-      }
-    } catch (error) {
-      this.logger.error(`Failed to send booking receipt to ${email}`, error);
-    }
+    await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': this.brevoApiKey },
+      body: JSON.stringify({
+        sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
+        to: [{ email }],
+        subject: `Booking Request — #${shortId} | CookOnCall`,
+        htmlContent: html,
+      }),
+    });
   }
 }

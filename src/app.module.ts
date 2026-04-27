@@ -19,6 +19,8 @@ import { AvailabilityModule } from './modules/availability/availability.module';
 import { MealPackagesModule } from './modules/meal-packages/meal-packages.module';
 import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
+import { SchedulerModule } from './modules/scheduler/scheduler.module';
+// add SchedulerModule to the imports array
 
 @Module({
   imports: [

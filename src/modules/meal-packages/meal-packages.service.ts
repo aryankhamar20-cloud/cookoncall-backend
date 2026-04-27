@@ -265,4 +265,11 @@ export class MealPackagesService {
     if (pkg.cook_id !== cook.id) throw new ForbiddenException('Not your package');
     return pkg;
   }
+  async getActivePackagesByCook(cookId: string) {
+    return this.mealPackagesRepository.find({
+      where: { cook_id:  cookId, is_active: true },
+      relations: ['categories', 'categories.dishes', 'addons'],
+      order: { created_at: 'ASC' },
+    });
+  }
 }

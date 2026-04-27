@@ -12,13 +12,22 @@ import { Payment } from '../payments/payment.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AvailabilityModule } from '../availability/availability.module';
 
-// NOTE (Apr 24): BookingsGateway removed — it was dead code (declared but
-// never emitted from). We rely on pull-to-refresh / polling for now.
-// Real-time updates will be re-introduced via Supabase Realtime post-launch.
+// ⚠️  VERIFY these import paths match your P1.5a entity files.
+import { MealPackage } from '../meal-packages/meal-package.entity';
+import { PackageAddon } from '../meal-packages/package-addon.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Booking, Cook, User, MenuItem, Payment]),
+    TypeOrmModule.forFeature([
+      Booking,
+      Cook,
+      User,
+      MenuItem,
+      Payment,
+      // ─── P1.5c: Package repos needed for price calculation ─
+      MealPackage,
+      PackageAddon,
+    ]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

@@ -13,13 +13,9 @@ import { Cook } from '../cooks/cook.entity';
 
 export enum BookingStatus {
   // ─── NEW FLOW (Apr 21, 2026) ─────────────────────────
-  // Customer books → chef has 3hr to accept/reject
   PENDING_CHEF_APPROVAL = 'pending_chef_approval',
-  // Chef accepted → customer has 3hr to pay
   AWAITING_PAYMENT = 'awaiting_payment',
-  // ─── LEGACY (kept for backward-compat with old DB rows) ─
-  // `pending` rows get migrated to `pending_chef_approval` via SQL.
-  // We keep the enum value so old rows don't break TypeORM reads.
+  // ─── LEGACY ─────────────────────────────────────────
   PENDING = 'pending',
   CONFIRMED = 'confirmed',
   IN_PROGRESS = 'in_progress',
@@ -115,20 +111,15 @@ export class Booking {
   cancellation_reason: string;
 
   // ─── CHEF REJECTION (Apr 21, 2026) ───────────────────
-  // Internal-only. MUST NOT be returned to customer endpoints.
   @Column({ type: 'text', nullable: true })
   rejection_reason: string;
 
-  // Timestamp set when chef accepts OR rejects.
   @Column({ type: 'timestamptz', nullable: true })
   chef_responded_at: Date;
 
-  // Set to chef_responded_at + 3h when chef accepts. Used for on-demand expiry.
   @Column({ type: 'timestamptz', nullable: true })
   payment_expires_at: Date;
 
-  // Link to the rebooked/replacement booking when a customer chooses
-  // "book another chef" after rejection. Lets us show a chain in admin.
   @Column({ type: 'uuid', nullable: true })
   rebooked_to_id: string;
 
@@ -152,12 +143,33 @@ export class Booking {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   refund_amount: number;
 
-  // ─── CHEF COMPENSATION ON CUSTOMER-CANCEL (Refund Policy v2 — Apr 26) ───
-  // Platform pays chef this amount when customer cancels late. Tracked here
-  // for future chef payout ledger (P2 wallet system).
-  // Tiers: ≥24h=₹0, ≥8h=₹25, ≥4h=₹50, ≥2h=₹75, <2h=₹100
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   chef_cancellation_fee: number;
+
+  // ─── PACKAGE BOOKING (P1.5c — Apr 27, 2026) ─────────
+  // Null on regular "build your own" bookings.
+  // package_id references meal_packages.id (no FK constraint — avoids cascade
+  // complexity; referential integrity enforced at service layer).
+  @Column({ type: 'uuid', nullable: true })
+  package_id: string;
+
+  // Flag so we can quickly filter package vs menu bookings without joins.
+  @Column({ type: 'boolean', default: false })
+  is_package_booking: boolean;
+
+  // Customer's category selections:
+  // [{categoryId, categoryName, selectedDishes: [{id, name, type}]}]
+  @Column({ type: 'jsonb', nullable: true })
+  selected_categories: Record<string, any>[];
+
+  // Selected add-ons: [{addonId, name, price}]
+  @Column({ type: 'jsonb', nullable: true })
+  selected_addons: Record<string, any>[];
+
+  // Ingredient reminder sent flag — set to true after 2h-before email fires
+  // so the cron doesn't double-send.
+  @Column({ type: 'boolean', default: false })
+  ingredient_reminder_sent: boolean;
 
   // ─── TIMESTAMPS ──────────────────────────────────────
   @Column({ type: 'timestamptz', nullable: true })

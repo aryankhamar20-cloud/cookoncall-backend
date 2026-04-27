@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsNotEmpty,
@@ -30,7 +31,7 @@ export class OrderItemDto {
   price: number;
 }
 
-// New: for menu checkbox selection during booking
+// For menu checkbox selection during booking (Build Your Own)
 export class SelectedItemDto {
   @IsUUID()
   menuItemId: string;
@@ -38,7 +39,19 @@ export class SelectedItemDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  qty?: number; // defaults to 1
+  qty?: number;
+}
+
+// ─── PACKAGE BOOKING (P1.5c) ─────────────────────────────────────
+// Customer picks which dishes to include from each category.
+// Each category has min/max_selections enforced at service layer.
+export class SelectedCategoryDto {
+  @IsUUID()
+  categoryId: string;
+
+  @IsArray()
+  @IsUUID('all', { each: true })
+  dishIds: string[];
 }
 
 export class CreateBookingDto {
@@ -86,19 +99,48 @@ export class CreateBookingDto {
   @IsString()
   instructions?: string;
 
-  // New: customer selects dishes from chef's menu via checkboxes
+  // ─── Build Your Own: customer selects from chef's menu ─
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => SelectedItemDto)
   selected_items?: SelectedItemDto[];
 
-  // Legacy: for food delivery orders
+  // ─── Legacy: for food delivery orders ──────────────────
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   order_items?: OrderItemDto[];
+
+  // ─── Package Booking (P1.5c) ───────────────────────────
+  // If packageId is provided, selected_items is ignored and package
+  // pricing logic takes over. cook_id must still match.
+  @IsOptional()
+  @IsUUID()
+  packageId?: string;
+
+  // Explicit guest count for package tier pricing (2/3/4/5/custom).
+  // Falls back to `guests` field if omitted.
+  @IsOptional()
+  @IsNumber()
+  @Min(2)
+  @Max(50)
+  @Type(() => Number)
+  guestCount?: number;
+
+  // Which dishes the customer selected per category.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SelectedCategoryDto)
+  selectedCategories?: SelectedCategoryDto[];
+
+  // Add-on IDs from the package's addon list.
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  selectedAddonIds?: string[];
 }
 
 export class UpdateBookingStatusDto {
@@ -110,8 +152,7 @@ export class UpdateBookingStatusDto {
   cancellation_reason?: string;
 }
 
-// ─── NEW (Apr 21, 2026): Chef rejects a booking ──────────
-// Reason is stored internally only. Never returned to the customer.
+// ─── Chef rejects a booking ────────────────────────────
 export class RejectBookingDto {
   @IsString()
   @IsNotEmpty()
@@ -119,9 +160,7 @@ export class RejectBookingDto {
   reason: string;
 }
 
-// ─── NEW (Apr 21, 2026): Rebook with a different chef ────
-// Used after chef rejects. Frontend sends original booking id
-// plus the new chef + freshly selected dishes.
+// ─── Rebook with a different chef after rejection/expiry ─
 export class RebookDto {
   @IsUUID()
   new_cook_id: string;
