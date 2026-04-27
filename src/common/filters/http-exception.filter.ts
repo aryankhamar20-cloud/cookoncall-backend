@@ -39,11 +39,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
         }
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // Log the real error server-side for debugging
       this.logger.error(
-        `Unhandled error: ${exception.message}`,
+        `Unhandled error on ${request.method} ${request.url}: ${exception.message}`,
         exception.stack,
       );
+      // NEVER leak raw DB / runtime errors to the client.
+      // Common offenders: TypeORM QueryFailedError ("column X does not exist"),
+      // EntityNotFoundError, raw Postgres errors, network errors.
+      const isInternal =
+        /QueryFailed|TypeORM|EntityNotFound|column .* does not exist|relation .* does not exist|ECONN|ETIMEDOUT|ENOTFOUND/i.test(
+          exception.message,
+        );
+      message = isInternal
+        ? 'Something went wrong on our end. Please try again in a moment.'
+        : exception.message;
     }
 
     response.status(status).json({
