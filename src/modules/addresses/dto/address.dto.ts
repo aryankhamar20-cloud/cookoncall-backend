@@ -45,6 +45,12 @@ export class CreateAddressDto {
   @MaxLength(100)
   area: string;
 
+  // P1.6 — Optional slug from service_areas table.
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  area_slug?: string;
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
@@ -107,6 +113,12 @@ export class UpdateAddressDto {
   @IsString()
   @MaxLength(100)
   area?: string;
+
+  // P1.6 — Optional slug from service_areas table.
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  area_slug?: string;
 
   @IsOptional()
   @IsString()

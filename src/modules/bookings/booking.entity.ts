@@ -81,6 +81,12 @@ export class Booking {
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
   longitude: number;
 
+  // P1.6 — snapshot of customer's area at booking time. Even if the customer
+  // edits the address later, the booking remembers what area was used to
+  // compute the visit fee + show in chef notifications.
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  customer_area_slug: string | null;
+
   @Column({ type: 'text', nullable: true })
   dishes: string;
 

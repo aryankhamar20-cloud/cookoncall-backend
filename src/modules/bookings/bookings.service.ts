@@ -32,6 +32,46 @@ import { PackageAddon } from '../meal-packages/package-addon.entity';
 const VISIT_FEE_HOME_COOKING = 49;
 const CONVENIENCE_RATE = 0.025; // 2.5% convenience fee charged to customer
 
+// ─── P1.6 — Per-area visit fee tiers (Apr 27, 2026) ─────────────────────
+const VISIT_FEE_DEFAULT = 49;
+const VISIT_FEE_EXTENDED = 79;
+const ALLOWED_VISIT_FEES = new Set([VISIT_FEE_DEFAULT, VISIT_FEE_EXTENDED]);
+
+/**
+ * Resolve the visit fee for a booking based on chef + customer area.
+ * Returns { fee, serves_area }. serves_area=false signals a soft-warning
+ * case (chef hasn't listed customer's area) — booking is still allowed.
+ *
+ * Falls back to ₹49 if customer area is unknown (legacy addresses, or
+ * customer typed area as 'Other').
+ */
+function resolveVisitFee(
+  cook: { service_area_slugs: string[]; serves_all_city: boolean; service_area_fees: Record<string, number> | null },
+  customerAreaSlug: string | null | undefined,
+): { fee: number; serves_area: boolean } {
+  if (cook.serves_all_city) {
+    if (customerAreaSlug && cook.service_area_fees?.[customerAreaSlug] != null) {
+      const overridden = Number(cook.service_area_fees[customerAreaSlug]);
+      if (ALLOWED_VISIT_FEES.has(overridden)) {
+        return { fee: overridden, serves_area: true };
+      }
+    }
+    return { fee: VISIT_FEE_DEFAULT, serves_area: true };
+  }
+  if (!customerAreaSlug) {
+    return { fee: VISIT_FEE_DEFAULT, serves_area: false };
+  }
+  const slugs = cook.service_area_slugs ?? [];
+  const servesArea = slugs.includes(customerAreaSlug);
+  if (!servesArea) return { fee: VISIT_FEE_DEFAULT, serves_area: false };
+  const overridden = cook.service_area_fees?.[customerAreaSlug];
+  if (overridden != null) {
+    const n = Number(overridden);
+    if (ALLOWED_VISIT_FEES.has(n)) return { fee: n, serves_area: true };
+  }
+  return { fee: VISIT_FEE_DEFAULT, serves_area: true };
+}
+
 // ─── NEW FLOW TIMING (Apr 21, 2026) ─────────────────────────────────────
 const CHEF_APPROVAL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const PAYMENT_WINDOW_MS = 3 * 60 * 60 * 1000;
@@ -191,9 +231,23 @@ export class BookingsService {
 
     // Calculate price
     const pkgSubtotal = this.calculatePackageSubtotal(pkg, guestCount, activeAddons);
-    const visitFee = VISIT_FEE_HOME_COOKING;
+
+    // P1.6 — per-area visit fee for package bookings
+    const customerArea = dto.customer_area_slug?.trim() || null;
+    const { fee: resolvedVisit, serves_area: chefServesArea } = resolveVisitFee(
+      cook,
+      customerArea,
+    );
+    const visitFee = resolvedVisit;
     const convFee = Math.round(pkgSubtotal * CONVENIENCE_RATE);
     const totalPrice = pkgSubtotal + visitFee + convFee;
+
+    if (!chefServesArea && customerArea) {
+      this.logger.warn(
+        `[area-mismatch] Package booking by user ${userId} for cook ${dto.cook_id} ` +
+          `in area '${customerArea}' — chef does not list this area. Soft-allowed.`,
+      );
+    }
 
     // Build human-readable dish list (for email + booking record)
     const dishNames: string[] = [];
@@ -234,6 +288,7 @@ export class BookingsService {
       address: dto.address,
       latitude: dto.latitude,
       longitude: dto.longitude,
+      customer_area_slug: customerArea,
       dishes: dishNames.join(', '),
       instructions: dto.instructions,
       order_items: null,
@@ -340,10 +395,24 @@ export class BookingsService {
     }
 
     const bookingType = dto.booking_type || BookingType.HOME_COOKING;
+
+    // P1.6 — per-area visit fee (₹49 default / ₹79 chef-extended)
+    const customerArea = dto.customer_area_slug?.trim() || null;
+    const { fee: resolvedVisit, serves_area: chefServesArea } = resolveVisitFee(
+      cook,
+      customerArea,
+    );
     const visitFee =
-      bookingType === BookingType.HOME_COOKING ? VISIT_FEE_HOME_COOKING : 0;
+      bookingType === BookingType.HOME_COOKING ? resolvedVisit : 0;
     const convenienceFee = Math.round(subtotal * CONVENIENCE_RATE);
     const totalPrice = subtotal + visitFee + convenienceFee;
+
+    if (!chefServesArea && customerArea && bookingType === BookingType.HOME_COOKING) {
+      this.logger.warn(
+        `[area-mismatch] Booking by user ${userId} for cook ${dto.cook_id} ` +
+          `in area '${customerArea}' — chef does not list this area. Soft-allowed.`,
+      );
+    }
 
     const booking = this.bookingsRepository.create({
       user_id: userId,
@@ -355,6 +424,7 @@ export class BookingsService {
       address: dto.address,
       latitude: dto.latitude,
       longitude: dto.longitude,
+      customer_area_slug: customerArea,
       dishes: selectedDishNames.length > 0
         ? selectedDishNames.join(', ')
         : (dto.dishes || null),

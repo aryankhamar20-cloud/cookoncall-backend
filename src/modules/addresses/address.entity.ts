@@ -54,6 +54,11 @@ export class Address {
   @Column({ length: 100 })
   area: string;
 
+  // P1.6 — Optional slug from service_areas table. Set by frontend
+  // when customer picks from dropdown; null when customer typed 'Other'.
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  area_slug: string | null;
+
   @Column({ length: 100 })
   city: string;
 

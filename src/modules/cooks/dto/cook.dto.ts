@@ -93,6 +93,20 @@ export class UpdateCookProfileDto {
   @IsString({ each: true })
   service_roles?: string[];
 
+  // ─── SERVICE AREAS (P1.6 — Apr 27, 2026) ─────────────
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  service_area_slugs?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  serves_all_city?: boolean;
+
+  // Map of slug → fee (49 or 79). Validated server-side.
+  @IsOptional()
+  service_area_fees?: Record<string, number>;
+
   // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ──────────
   @IsOptional()
   @IsInt()
@@ -233,6 +247,12 @@ export class SearchCooksDto {
   @IsOptional()
   @IsString()
   search?: string; // Search by chef name
+
+  // P1.6 — filter by area slug (e.g. ?area=bodakdev)
+  // Backend matches: serves_all_city = TRUE OR :area = ANY(service_area_slugs)
+  @IsOptional()
+  @IsString()
+  area?: string;
 
   @IsOptional()
   @IsBoolean()

@@ -17,6 +17,7 @@ import { UploadsModule } from './modules/uploads/uploads.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { AvailabilityModule } from './modules/availability/availability.module';
 import { MealPackagesModule } from './modules/meal-packages/meal-packages.module';
+import { AreasModule } from './modules/areas/areas.module';
 import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
@@ -75,6 +76,7 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     AddressesModule,
     AvailabilityModule,
     MealPackagesModule,
+    AreasModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints

@@ -58,6 +58,37 @@ export class CooksService {
   // ─── UPDATE COOK PROFILE ─────────────────────────────
   async updateProfile(userId: string, dto: UpdateCookProfileDto) {
     const cook = await this.findByUserId(userId);
+
+    // ─── P1.6 — Validate service area fields ────────────
+    // Fees must be exactly 49 or 79 (per pricing tier).
+    // service_area_fees keys must be a subset of service_area_slugs.
+    if (dto.service_area_fees && typeof dto.service_area_fees === 'object') {
+      const fees = dto.service_area_fees;
+      const allowedFees = new Set([49, 79]);
+      const targetSlugs = new Set(
+        dto.service_area_slugs ?? cook.service_area_slugs ?? [],
+      );
+      for (const [slug, fee] of Object.entries(fees)) {
+        if (!targetSlugs.has(slug)) {
+          throw new BadRequestException(
+            `Cannot set fee for area '${slug}' — it's not in your service areas.`,
+          );
+        }
+        if (!allowedFees.has(Number(fee))) {
+          throw new BadRequestException(
+            `Visit fee for '${slug}' must be ₹49 or ₹79.`,
+          );
+        }
+      }
+    }
+
+    // If chef sets serves_all_city=true, clear specific area selections
+    // (they're redundant and confusing).
+    if (dto.serves_all_city === true) {
+      cook.service_area_slugs = [];
+      cook.service_area_fees = {};
+    }
+
     Object.assign(cook, dto);
     return this.cooksRepository.save(cook);
   }
@@ -151,6 +182,24 @@ export class CooksService {
     // Search by chef name
     if (dto.search) {
       qb.andWhere('u.name ILIKE :search', { search: `%${dto.search}%` });
+    }
+
+    // ─── P1.6 — Service area filter ────────────────────────
+    // Match chefs who either serve the entire city OR have this area
+    // in their service_area_slugs array. Chefs with empty slugs +
+    // serves_all_city=false are invisible (intended migration default).
+    if (dto.area) {
+      qb.andWhere(
+        '(c.serves_all_city = TRUE OR :areaSlug = ANY(c.service_area_slugs))',
+        { areaSlug: dto.area },
+      );
+    } else {
+      // No area specified → still hide chefs with no areas + not all-city.
+      // Otherwise an unconfigured chef would show up without ever being
+      // bookable for anyone.
+      qb.andWhere(
+        '(c.serves_all_city = TRUE OR cardinality(c.service_area_slugs) > 0)',
+      );
     }
 
     if (dto.city) {
@@ -348,5 +397,53 @@ export class CooksService {
     }
 
     return cook;
+  }
+
+  // ─── P1.6 — Visit fee for a (chef, customer area) pair ──
+  // Returns the visit fee the customer should pay, plus whether the
+  // chef actually services that area. Used by BookingsService and by
+  // frontend to display the right amount per chef on the booking form.
+  computeVisitFee(
+    cook: Pick<Cook, 'service_area_slugs' | 'serves_all_city' | 'service_area_fees'>,
+    customerAreaSlug: string | null | undefined,
+  ): { fee: number; serves_area: boolean } {
+    const DEFAULT_FEE = 49;
+    const EXTENDED_FEE = 79;
+
+    // Chef-side: serves_all_city is a "yes to anyone" setting.
+    // Without a specific area, we charge the default ₹49.
+    if (cook.serves_all_city) {
+      // If customer has an area + chef has a per-area override for it, use that.
+      if (customerAreaSlug && cook.service_area_fees?.[customerAreaSlug] != null) {
+        return {
+          fee: Number(cook.service_area_fees[customerAreaSlug]) || DEFAULT_FEE,
+          serves_area: true,
+        };
+      }
+      return { fee: DEFAULT_FEE, serves_area: true };
+    }
+
+    // Specific service areas only.
+    if (!customerAreaSlug) {
+      return { fee: DEFAULT_FEE, serves_area: false };
+    }
+
+    const slugs = cook.service_area_slugs ?? [];
+    const servesArea = slugs.includes(customerAreaSlug);
+    if (!servesArea) {
+      // Chef does not list this area — customer-facing default.
+      return { fee: DEFAULT_FEE, serves_area: false };
+    }
+
+    const overriddenFee = cook.service_area_fees?.[customerAreaSlug];
+    if (overriddenFee != null) {
+      const n = Number(overriddenFee);
+      // Defensive: only allow ₹49 or ₹79.
+      if (n === DEFAULT_FEE || n === EXTENDED_FEE) {
+        return { fee: n, serves_area: true };
+      }
+    }
+
+    return { fee: DEFAULT_FEE, serves_area: true };
   }
 }

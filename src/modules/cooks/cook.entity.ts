@@ -86,6 +86,29 @@ export class Cook {
   })
   service_roles: string[];
 
+  // ─── SERVICE AREAS (P1.6 — Apr 27, 2026) ──────────────
+  // List of area slugs (e.g. ['bodakdev', 'thaltej', 'vastrapur']) that this
+  // chef serves. Empty array + serves_all_city=false means chef is NOT
+  // visible in customer search (intentional default for clean migration).
+  @Column({
+    type: 'text',
+    array: true,
+    default: '{}',
+  })
+  service_area_slugs: string[];
+
+  // If true, chef serves the entire city — area_slugs is ignored for filtering.
+  // Useful for chefs willing to travel anywhere or for new chefs before they
+  // pick specific areas (admin can opt them in).
+  @Column({ type: 'boolean', default: false })
+  serves_all_city: boolean;
+
+  // Per-chef per-area visit fee map. Example: {"bodakdev": 49, "naroda": 79}.
+  // If a slug is in service_area_slugs but NOT in this map, default is ₹49.
+  // Chef sets this in the profile UI by toggling each area between ₹49/₹79.
+  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  service_area_fees: Record<string, number>;
+
   // ─── AVAILABILITY SETTINGS (Apr 24, 2026) ─────────────
   // How many minutes in advance a customer must book.
   // Default 60 min (1 hour) per launch decision.

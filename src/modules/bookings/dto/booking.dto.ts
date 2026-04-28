@@ -91,6 +91,13 @@ export class CreateBookingDto {
   @IsNumber()
   longitude?: number;
 
+  // P1.6 — Customer's area slug snapshot (e.g. 'bodakdev'). Set by frontend
+  // from the chosen address. Used to compute per-area visit fee and to warn
+  // chef if the customer is outside the chef's listed service areas.
+  @IsOptional()
+  @IsString()
+  customer_area_slug?: string;
+
   @IsOptional()
   @IsString()
   dishes?: string;
