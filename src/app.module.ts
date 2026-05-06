@@ -21,6 +21,7 @@ import { AreasModule } from './modules/areas/areas.module';
 import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { ErrorsModule } from './modules/errors/errors.module';
 // add SchedulerModule to the imports array
 
 @Module({
@@ -77,6 +78,7 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     AvailabilityModule,
     MealPackagesModule,
     AreasModule,
+    ErrorsModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints

@@ -240,6 +240,13 @@ export class SearchCooksDto {
   @IsString()
   city?: string;
 
+  // Filter by service role: 'home_cook' | 'delivery' | 'both'
+  // 'home_cook' matches chefs with home_cook OR both.
+  // 'delivery'  matches chefs with delivery  OR both.
+  @IsOptional()
+  @IsString()
+  service_role?: string;
+
   @IsOptional()
   @IsString()
   cuisine?: string;

@@ -202,6 +202,14 @@ export class CooksService {
       );
     }
 
+    // service_role filter — 'home_cook' matches home_cook|both, 'delivery' matches delivery|both
+    if (dto.service_role && dto.service_role !== 'all') {
+      qb.andWhere(
+        '(:role = ANY(c.service_roles) OR \'both\' = ANY(c.service_roles))',
+        { role: dto.service_role },
+      );
+    }
+
     if (dto.city) {
       qb.andWhere('LOWER(c.city) = LOWER(:city)', { city: dto.city });
     }
