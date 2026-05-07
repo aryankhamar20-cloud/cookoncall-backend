@@ -154,11 +154,15 @@ export class BookingsService {
       throw new BadRequestException('Scheduled date must be in the future');
     }
 
-    await this.availabilityService.assertSlotAvailable(
-      dto.cook_id,
-      scheduledDate,
-      dto.duration_hours || 2,
-    );
+    // Food-delivery orders don't occupy a time slot — the chef accepts
+    // and delivers when ready. Skip slot-availability check for them.
+    if (dto.booking_type !== BookingType.FOOD_DELIVERY) {
+      await this.availabilityService.assertSlotAvailable(
+        dto.cook_id,
+        scheduledDate,
+        dto.duration_hours || 2,
+      );
+    }
 
     const customer = await this.usersRepository.findOne({ where: { id: userId } });
 
