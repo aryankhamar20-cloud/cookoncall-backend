@@ -205,8 +205,8 @@ export class CooksService {
     // service_role filter — 'home_cook' matches home_cook|both, 'delivery' matches delivery|both
     if (dto.service_role && dto.service_role !== 'all') {
       qb.andWhere(
-        "(c.service_role = :role OR c.service_role = 'both')",
-        { role: dto.service_role },
+        "(c.service_roles LIKE :rolePattern OR c.service_roles LIKE '%both%')",
+        { rolePattern: `%${dto.service_role}%` },
       );
     }
 

@@ -1,0 +1,22 @@
+FILE: src/app.module.ts
+─────────────────────────────────────────────────────
+ADD this import near the top (after AvailabilityModule import):
+
+  import { MealPackagesModule } from './modules/meal-packages/meal-packages.module';
+
+─────────────────────────────────────────────────────
+ADD MealPackagesModule to the imports array in @Module:
+
+  // Feature modules
+  AuthModule,
+  UsersModule,
+  CooksModule,
+  BookingsModule,
+  PaymentsModule,
+  ReviewsModule,
+  NotificationsModule,
+  AdminModule,
+  UploadsModule,
+  AddressesModule,
+  AvailabilityModule,
+  MealPackagesModule,   // ← ADD THIS LINE
