@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AnalyticsService } from './analytics.service';
+import { AnalyticsPdfService } from './analytics-pdf.service';
+import { AnalyticsDigestService } from './analytics-digest.service';
 import { AnalyticsQueryDto, TrackEventDto } from './dto/analytics.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -41,7 +43,11 @@ function classifyDevice(ua: string | undefined): string | null {
 @UseGuards(RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminAnalyticsController {
-  constructor(private readonly analytics: AnalyticsService) {}
+  constructor(
+    private readonly analytics: AnalyticsService,
+    private readonly pdf: AnalyticsPdfService,
+    private readonly digest: AnalyticsDigestService,
+  ) {}
 
   @Get('overview')
   overview(@Query() dto: AnalyticsQueryDto) {
@@ -94,6 +100,57 @@ export class AdminAnalyticsController {
         .slice(0, 10)}.csv"`,
     );
     res.send(csv);
+  }
+
+  /**
+   * Phase 3 — PDF export.
+   * GET /admin/analytics/export.pdf?metric=overview&from=...&to=...
+   *
+   * Currently `metric=overview` is the only supported value; the
+   * generator already pulls top chefs and locations alongside, so an
+   * "overview" PDF is the comprehensive report. Leaving the param in
+   * for future per-metric drill-downs.
+   */
+  @Get('export.pdf')
+  @Header('Content-Type', 'application/pdf')
+  async exportPdf(
+    @Query('metric') metric: string,
+    @Query() dto: AnalyticsQueryDto,
+    @Res() res: Response,
+  ) {
+    const buffer = await this.pdf.buildOverviewPdf(dto);
+    res.set(
+      'Content-Disposition',
+      `attachment; filename="cookoncall-analytics-${metric || 'overview'}-${new Date()
+        .toISOString()
+        .slice(0, 10)}.pdf"`,
+    );
+    // pdfkit returns a Buffer — Express handles content-length itself.
+    res.send(buffer);
+  }
+
+  /**
+   * Phase 3 — Preview the daily digest as JSON without sending email.
+   * Useful when an admin wants to peek at "what would yesterday's
+   * digest look like" or QA wants to verify the cron payload after a
+   * deploy. Doesn't send anything, doesn't write any state.
+   */
+  @Get('digest/preview')
+  async digestPreview() {
+    return this.digest.buildYesterdayDigest();
+  }
+
+  /**
+   * Phase 3 — Manually trigger the digest cron right now.
+   * Same code path as the 09:00 IST cron; respects the
+   * ANALYTICS_DIGEST_DISABLED env flag and the per-admin email_enabled
+   * preference. Useful for "I want to send the digest 2 hours early
+   * because of a board meeting."
+   */
+  @Post('digest/run-now')
+  async digestRunNow() {
+    await this.digest.runDailyDigest();
+    return { triggered: true };
   }
 }
 
