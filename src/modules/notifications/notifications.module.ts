@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 import { NotificationsService } from './notifications.service';
@@ -7,6 +7,7 @@ import { EmailProcessor } from './email.processor';
 import { SmsProcessor } from './sms.processor';
 import { Notification } from './notification.entity';
 import { User } from '../users/user.entity';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
@@ -19,6 +20,11 @@ import { User } from '../users/user.entity';
       { name: 'email' },
       { name: 'sms' },
     ),
+    // Analytics Phase 2 — recordClick() emits `notification_clicked`
+    // events through AnalyticsService. forwardRef guards against the
+    // theoretical circular import path AnalyticsModule -> AdminModule
+    // -> NotificationsModule that already exists in this codebase.
+    forwardRef(() => AnalyticsModule),
   ],
   controllers: [NotificationsController],
   providers: [NotificationsService, EmailProcessor, SmsProcessor],

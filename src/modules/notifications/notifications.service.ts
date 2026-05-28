@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -6,6 +6,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Notification, NotificationType } from './notification.entity';
 import { User } from '../users/user.entity';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 @Injectable()
 export class NotificationsService {
@@ -20,6 +21,9 @@ export class NotificationsService {
     @InjectQueue('email') private emailQueue: Queue,
     @InjectQueue('sms') private smsQueue: Queue,
     private configService: ConfigService,
+    // Round 4 / Analytics Phase 2 — record `notification_clicked`
+    // events so the admin Broadcast panel can show CTR per blast.
+    private readonly analytics: AnalyticsService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -157,6 +161,58 @@ export class NotificationsService {
       { is_read: true },
     );
     return { message: 'All notifications marked as read' };
+  }
+
+  // ─── RECORD CLICK (Analytics Phase 2) ────────────────
+  /**
+   * The user actually opened / tapped this notification.
+   *
+   * - Sets `clicked_at` exactly once (subsequent calls are a no-op so
+   *   we don't double-count CTR).
+   * - Also flips `is_read` for free — opening implies reading.
+   * - Emits a `notification_clicked` analytics event with the
+   *   broadcast_id pulled from the notification's metadata so the
+   *   admin Broadcast panel can compute click-through-rate per blast.
+   */
+  async recordClick(userId: string, notificationId: string) {
+    const notification = await this.notificationsRepository.findOne({
+      where: { id: notificationId, user_id: userId },
+    });
+    if (!notification) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    // First click only — re-clicks (e.g. user reopens the same alert)
+    // don't inflate CTR.
+    const isFirstClick = !notification.clicked_at;
+    if (isFirstClick) {
+      await this.notificationsRepository.update(
+        { id: notificationId, user_id: userId },
+        { clicked_at: new Date(), is_read: true },
+      );
+
+      // Best-effort analytics. Wrapped in catch so a logging failure
+      // never breaks the user's tap.
+      const broadcastId =
+        (notification.metadata && (notification.metadata as any).broadcast_id) ||
+        null;
+      this.analytics
+        .track({
+          event_type: 'notification_clicked',
+          user_id: userId,
+          metadata: {
+            notification_id: notificationId,
+            notification_type: notification.type,
+            broadcast_id: broadcastId,
+          },
+        })
+        .catch(() => undefined);
+    }
+
+    return {
+      clicked: true,
+      first_click: isFirstClick,
+    };
   }
 
   // ─── SEND EMAIL (via Bull Queue) ──────────────────────

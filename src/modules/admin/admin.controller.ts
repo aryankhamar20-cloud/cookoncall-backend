@@ -224,4 +224,15 @@ export class AdminController {
   ) {
     return this.adminService.listBroadcasts(page || 1, limit || 50);
   }
+
+  /**
+   * Round 4 / Analytics Phase 2 — broadcast CTR.
+   * Returns clicked / created counts plus the percent and the cohort
+   * of clickers (first 100). Drives the "Tap-throughs: X / Y (Z%)"
+   * column the web admin Broadcast tab can render later.
+   */
+  @Get('notifications/broadcasts/:id/ctr')
+  async broadcastCtr(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.broadcastCtr(id);
+  }
 }

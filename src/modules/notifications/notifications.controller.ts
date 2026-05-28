@@ -4,6 +4,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
@@ -40,5 +41,21 @@ export class NotificationsController {
   @Patch('read-all')
   async markAllRead(@CurrentUser() user: User) {
     return this.notificationsService.markAllRead(user.id);
+  }
+
+  /**
+   * Round 4 / Analytics Phase 2 — CTR tracking.
+   * Fired when the user actually opens / taps the notification (not
+   * the same as bulk "mark all read"). The service writes the
+   * `clicked_at` timestamp and emits a `notification_clicked` analytics
+   * event so the admin dashboard can compute click-through rate per
+   * broadcast.
+   */
+  @Post(':id/click')
+  async recordClick(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.notificationsService.recordClick(user.id, id);
   }
 }

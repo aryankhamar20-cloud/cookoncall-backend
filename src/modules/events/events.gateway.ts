@@ -25,6 +25,10 @@ export enum WsEvent {
   BOOKING_EXPIRED      = 'booking:expired',
   // Notifications
   NOTIFICATION_NEW     = 'notification:new',
+  // Round 4 / Analytics Phase 2 — live admin telemetry
+  // Emitted only to the `admin:lobby` room every few seconds.
+  ADMIN_LIVE_COUNTERS  = 'admin:live-counters',
+  ADMIN_LIVE_BOOKING   = 'admin:live-booking',
 }
 
 @WebSocketGateway({
@@ -51,6 +55,11 @@ export class EventsGateway
   // Map of userId → Set of socket IDs (one user can have multiple tabs/devices)
   private userSockets = new Map<string, Set<string>>();
 
+  // Round 4 / Analytics Phase 2 — track admin sockets separately so
+  // the live-counter cron can emit only to admin clients (avoid waking
+  // every connected customer's tab every 5s).
+  private adminSocketIds = new Set<string>();
+
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
@@ -76,7 +85,9 @@ export class EventsGateway
       });
 
       const userId: string = payload.sub;
+      const role: string | undefined = payload.role;
       (client as any).userId = userId;
+      (client as any).role = role;
 
       // Register socket in user room
       if (!this.userSockets.has(userId)) {
@@ -87,8 +98,16 @@ export class EventsGateway
       // Join personal room
       await client.join(`user:${userId}`);
 
-      this.logger.debug(`Client connected: ${client.id} (userId: ${userId})`);
-      client.emit('connected', { userId, socketId: client.id });
+      // Round 4 / Analytics Phase 2 — admins also join the lobby so
+      // the live-counters cron can fan-out efficiently. Customers
+      // and chefs intentionally do NOT join.
+      if (role === 'admin') {
+        this.adminSocketIds.add(client.id);
+        await client.join('admin:lobby');
+      }
+
+      this.logger.debug(`Client connected: ${client.id} (userId: ${userId}, role: ${role ?? 'unknown'})`);
+      client.emit('connected', { userId, role: role ?? null, socketId: client.id });
     } catch {
       this.logger.warn(`Unauthorized WS connection attempt: ${client.id}`);
       client.disconnect();
@@ -103,6 +122,7 @@ export class EventsGateway
         this.userSockets.delete(userId);
       }
     }
+    this.adminSocketIds.delete(client.id);
     this.logger.debug(`Client disconnected: ${client.id}`);
   }
 
@@ -161,5 +181,38 @@ export class EventsGateway
   /** Get count of currently connected users */
   getConnectedUsersCount(): number {
     return this.userSockets.size;
+  }
+
+  /** Get count of currently connected admin sockets (NOT users —
+   *  multiple tabs from the same admin count separately because each
+   *  tab is consuming live telemetry independently). */
+  getConnectedAdminSocketsCount(): number {
+    return this.adminSocketIds.size;
+  }
+
+  // ─── Live admin telemetry (Analytics Phase 2) ─────────
+  /**
+   * Push the current live-counter snapshot to every admin tab.
+   * Called by AnalyticsRealtimeService on a 5s cron. Cheap because
+   * Socket.IO only serialises to the rooms that have members — when
+   * no admin is online this is a no-op.
+   */
+  emitLiveCounters(payload: Record<string, any>): void {
+    this.server.to('admin:lobby').emit(WsEvent.ADMIN_LIVE_COUNTERS, {
+      ...payload,
+      ts: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Push a single new booking to the admin live-feed. Called from
+   * BookingsService whenever a booking is created so the admin sees
+   * it stream in without polling.
+   */
+  emitLiveBooking(booking: Record<string, any>): void {
+    this.server.to('admin:lobby').emit(WsEvent.ADMIN_LIVE_BOOKING, {
+      ...booking,
+      ts: new Date().toISOString(),
+    });
   }
 }
