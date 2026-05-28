@@ -10,6 +10,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CooksService } from './cooks.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -30,8 +31,11 @@ export class CooksController {
   constructor(private readonly cooksService: CooksService) {}
 
   // ─── PUBLIC ROUTES ────────────────────────────────────
-
+  // Throttle the chef-search endpoint to deter scrapers. The default
+  // tier is 100 req/min/IP — `/cooks` listing is a heavier query and a
+  // common scraping target, so we tighten it to 30 req/min/IP.
   @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
   @Get()
   async searchCooks(@Query() dto: SearchCooksDto) {
     return this.cooksService.searchCooks(dto);

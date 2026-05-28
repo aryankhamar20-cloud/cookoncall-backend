@@ -149,6 +149,20 @@ export class BookingsController {
     return this.bookingsService.verifyEndOtp(id, user.id, otp);
   }
 
+  // ─── COOK-ONLY: CUSTOMER CONTACT POST-CONFIRMATION ─────
+  /**
+   * Returns the customer's phone number to the assigned cook once the
+   * booking is paid / confirmed. Pre-confirmation, this returns 403 to
+   * stop cooks from bypassing the platform on free leads.
+   */
+  @Get(':id/customer-phone')
+  async getCustomerPhone(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.getCustomerPhoneForCook(id, user.id);
+  }
+
   // ─── CANCELLATION REFUND ESTIMATE ──────────────────────
   // Refund Policy v2 (Apr 26 LOCKED) — Option B: % on TOTAL, platform absorbs chef comp
   //   ≥24h: 100% refund / chef ₹0

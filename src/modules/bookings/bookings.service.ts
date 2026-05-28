@@ -550,6 +550,43 @@ export class BookingsService {
     return this.stripInternalFields(b);
   }
 
+  // ─── COOK-ONLY: GET CUSTOMER PHONE POST-CONFIRMATION ─────
+  /**
+   * Returns the customer's phone to the cook AFTER the booking is paid /
+   * confirmed (or in progress). Pre-confirmation we hide the phone so the
+   * cook can't bypass the platform on free leads.
+   *
+   * Authorisation: caller must be the assigned cook.
+   * State: only allowed when status is one of CONFIRMED / IN_PROGRESS / COMPLETED
+   *        (legacy PENDING is treated like CONFIRMED for back-compat).
+   */
+  async getCustomerPhoneForCook(bookingId: string, cookUserId: string) {
+    const booking = await this.findById(bookingId);
+    const cook = await this.cooksRepository.findOne({
+      where: { user_id: cookUserId },
+    });
+    if (!cook || booking.cook_id !== cook.id) {
+      throw new ForbiddenException('Not authorised for this booking');
+    }
+    const allowedStates: BookingStatus[] = [
+      BookingStatus.PENDING, // legacy
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+      BookingStatus.COMPLETED,
+    ];
+    if (!allowedStates.includes(booking.status)) {
+      throw new ForbiddenException(
+        'Customer phone is only available after the booking is confirmed',
+      );
+    }
+    const customer = booking.user;
+    return {
+      booking_id: booking.id,
+      customer_name: customer?.name ?? null,
+      customer_phone: customer?.phone ?? null,
+    };
+  }
+
   // ═══════════════════════════════════════════════════════
   // CHEF ACCEPT / REJECT
   // ═══════════════════════════════════════════════════════

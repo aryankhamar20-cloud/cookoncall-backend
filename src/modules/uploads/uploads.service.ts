@@ -43,10 +43,22 @@ export class UploadsService {
               folder,
               resource_type: 'image',
               transformation: [
-                { width: 800, height: 800, crop: 'limit' },
-                { quality: 'auto' },
+                // Cap full image to 1200×1200 for retina cards / hero banners.
+                // `crop: 'limit'` only shrinks oversized originals — it never upscales.
+                { width: 1200, height: 1200, crop: 'limit' },
+                // q_auto:eco picks the lowest quality that still looks good.
+                // Saves ~30% vs q_auto:good with imperceptible visual difference.
+                { quality: 'auto:eco' },
+                // f_auto serves WebP / AVIF to clients that support them
+                // (Chrome / Edge / mobile Safari) and falls back to JPEG/PNG.
                 { fetch_format: 'auto' },
               ],
+              eager: [
+                // Pre-generate a 200×200 face-aware thumbnail for avatars
+                // and chef cards so the frontend never resizes on render.
+                { width: 200, height: 200, crop: 'fill', gravity: 'auto', quality: 'auto' },
+              ],
+              eager_async: true,
             },
             (error, result) => {
               if (error) reject(error);
