@@ -26,6 +26,7 @@ import { HealthModule } from './modules/health/health.module';
 import { EventsModule } from './modules/events/events.module';
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
 
 @Module({
@@ -89,6 +90,8 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
     EventsModule,
     PromoCodesModule,
     ReferralsModule,
+    // Analytics Phase 1
+    AnalyticsModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints
