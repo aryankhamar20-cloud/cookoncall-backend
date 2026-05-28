@@ -22,22 +22,54 @@ export class NotificationsService {
   }
 
   // ─── CREATE IN-APP NOTIFICATION ───────────────────────
+  /**
+   * Create a notification, with optional idempotency.
+   *
+   * If `idempotencyKey` is provided, an existing row for the same
+   * (user_id, idempotency_key) is returned instead of inserting a
+   * duplicate. This protects every notification source — Bull retry,
+   * webhook re-delivery, cron re-run — from spamming the user.
+   */
   async create(
     userId: string,
     type: NotificationType,
     title: string,
     message: string,
     metadata?: Record<string, any>,
+    idempotencyKey?: string,
   ) {
+    if (idempotencyKey) {
+      const existing = await this.notificationsRepository.findOne({
+        where: { user_id: userId, idempotency_key: idempotencyKey },
+      });
+      if (existing) {
+        return existing;
+      }
+    }
+
     const notification = this.notificationsRepository.create({
       user_id: userId,
       type,
       title,
       message,
       metadata,
+      idempotency_key: idempotencyKey ?? null,
     });
 
-    return this.notificationsRepository.save(notification);
+    try {
+      return await this.notificationsRepository.save(notification);
+    } catch (err: any) {
+      // Race condition: a concurrent create() with the same idempotency
+      // key won the insert. Re-fetch and return that row instead of
+      // bubbling the unique-violation up.
+      if (idempotencyKey && /duplicate key|unique/i.test(err?.message || '')) {
+        const existing = await this.notificationsRepository.findOne({
+          where: { user_id: userId, idempotency_key: idempotencyKey },
+        });
+        if (existing) return existing;
+      }
+      throw err;
+    }
   }
 
   // ─── GET USER NOTIFICATIONS ───────────────────────────

@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString, Length, Matches } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class SendOtpDto {
   @Matches(/^[6-9]\d{9}$/, { message: 'Enter a valid 10-digit Indian phone number' })
@@ -48,8 +48,14 @@ export class ResetPasswordDto {
   @Length(6, 6)
   otp: string;
 
+  // Round 2 hardening: same complexity rules as registration so reset
+  // doesn't ship weaker passwords than signup.
   @IsString()
-  @IsNotEmpty()
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @MaxLength(72, { message: 'Password must be 72 characters or less' })
+  @Matches(/^(?=.*[A-Za-z])(?=.*\d).+$/, {
+    message: 'Password must contain at least one letter and one number',
+  })
   new_password: string;
 }
 

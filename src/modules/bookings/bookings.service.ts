@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository, Between, LessThan } from 'typeorm';
+import { In, Repository, Between, LessThan, DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Booking, BookingStatus, BookingType } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
@@ -106,6 +106,9 @@ export class BookingsService {
     private notificationsService: NotificationsService,
     private configService: ConfigService,
     private availabilityService: AvailabilityService,
+    // Round 2 — used to wrap multi-write state transitions
+    // (verifyEndOtp updates booking + cook in a single transaction).
+    private readonly dataSource: DataSource,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -1038,10 +1041,16 @@ export class BookingsService {
       );
     }
 
-    await this.bookingsRepository.save(booking);
-
+    // Round 2: booking save + cook stats increment must be atomic.
+    // Without this transaction a crash between the two saves leaves
+    // the booking marked completed but the cook's total_bookings stale,
+    // or vice versa. Wrapping in a single transaction guarantees both
+    // commit together or neither does.
     cook.total_bookings += 1;
-    await this.cooksRepository.save(cook);
+    await this.dataSource.transaction(async (manager) => {
+      await manager.save(Booking, booking);
+      await manager.save(Cook, cook);
+    });
 
     this.notificationsService
       .notifySessionCompleted(
