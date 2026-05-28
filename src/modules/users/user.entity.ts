@@ -77,6 +77,24 @@ export class User {
   @Column({ nullable: true, type: 'text' })
   fcm_token: string;
 
+  // ─── NOTIFICATION PREFERENCES (Round 4) ─────────────────
+  // Customers and chefs can mute individual channels from Settings.
+  // We default everything to ON because for a transactional service
+  // (booking confirmations, payment receipts) the user expects
+  // notifications until they opt out.
+  //
+  // The notifications service reads these flags before queuing email
+  // or SMS; in-app notifications are NEVER suppressed (the user has
+  // to be able to see their booking status when they open the app).
+  @Column({ default: true })
+  push_enabled: boolean;
+
+  @Column({ default: true })
+  email_enabled: boolean;
+
+  @Column({ default: true })
+  sms_enabled: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

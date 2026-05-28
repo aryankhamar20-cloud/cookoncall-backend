@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Notification, NotificationType } from './notification.entity';
+import { User } from '../users/user.entity';
 
 @Injectable()
 export class NotificationsService {
@@ -14,11 +15,51 @@ export class NotificationsService {
   constructor(
     @InjectRepository(Notification)
     private notificationsRepository: Repository<Notification>,
+    @InjectRepository(User)
+    private usersRepository: Repository<User>,
     @InjectQueue('email') private emailQueue: Queue,
     @InjectQueue('sms') private smsQueue: Queue,
     private configService: ConfigService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
+  }
+
+  // ─── PREFERENCES ──────────────────────────────────────
+  /**
+   * Round 4 — honor the user's notification-channel preferences before
+   * queuing email / SMS / push.
+   *
+   * Design notes:
+   *   • In-app rows are NEVER suppressed — the user has to be able to
+   *     see their booking timeline when they open the app, regardless
+   *     of channel mutes. `create()` always inserts.
+   *   • OTP / verification emails are sent from AuthService directly
+   *     and bypass this gate (security baseline; users can't opt out
+   *     of being told "your account just signed in").
+   *   • Failure to read the prefs row defaults to ALLOW the channel
+   *     so a transient DB hiccup doesn't drop a booking confirmation.
+   */
+  private async _channelAllowed(
+    userId: string | null,
+    channel: 'email' | 'sms' | 'push',
+  ): Promise<boolean> {
+    if (!userId) return true;
+    try {
+      const u = await this.usersRepository.findOne({
+        where: { id: userId },
+        select: ['id', 'email_enabled', 'sms_enabled', 'push_enabled'] as any,
+      });
+      if (!u) return true;
+      if (channel === 'email') return u.email_enabled !== false;
+      if (channel === 'sms') return u.sms_enabled !== false;
+      if (channel === 'push') return u.push_enabled !== false;
+      return true;
+    } catch (err: any) {
+      this.logger.warn(
+        `Could not read notification prefs for ${userId} (${channel}): ${err?.message || err}. Defaulting to allow.`,
+      );
+      return true;
+    }
   }
 
   // ─── CREATE IN-APP NOTIFICATION ───────────────────────
@@ -231,7 +272,9 @@ export class NotificationsService {
           <em>If you already paid, please ignore this email.</em>
         </p>`,
       );
-      this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+      if (await this._channelAllowed(customerUserId, 'email')) {
+        this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+      }
     }
   }
 
@@ -276,7 +319,9 @@ export class NotificationsService {
           Open the CookOnCall app to book another chef at no extra charge, or close this request.
         </p>`,
       );
-      this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+      if (await this._channelAllowed(customerUserId, 'email')) {
+        this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+      }
     }
   }
 
@@ -305,7 +350,9 @@ export class NotificationsService {
 
     if (recipientEmail) {
       const html = this.wrapBrandedHtml('Booking expired', `<p style="color:#5D4E37;">${message}</p>`);
-      this.sendDirectEmail(recipientEmail, title, html).catch(() => undefined);
+      if (await this._channelAllowed(recipientUserId, 'email')) {
+        this.sendDirectEmail(recipientEmail, title, html).catch(() => undefined);
+      }
     }
   }
 
