@@ -1,10 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, forwardRef, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Notification, NotificationType } from './notification.entity';
+import { FcmService } from '../../common/services/fcm.service';
+import { User } from '../users/user.entity';
+import { EventsGateway } from './events.gateway';
 
 @Injectable()
 export class NotificationsService {
@@ -14,14 +17,21 @@ export class NotificationsService {
   constructor(
     @InjectRepository(Notification)
     private notificationsRepository: Repository<Notification>,
+    @InjectRepository(User)
+    private usersRepository: Repository<User>,
     @InjectQueue('email') private emailQueue: Queue,
     @InjectQueue('sms') private smsQueue: Queue,
     private configService: ConfigService,
+    private readonly fcmService: FcmService,
+    // ✅ P1: EventsGateway for real-time WebSocket pushes
+    // Use forwardRef to avoid circular dependency with notifications module
+    @Inject(forwardRef(() => EventsGateway))
+    private readonly eventsGateway: EventsGateway,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
 
-  // ─── CREATE IN-APP NOTIFICATION ───────────────────────
+  // ─── CREATE IN-APP NOTIFICATION + PUSH + WS ──────────
   async create(
     userId: string,
     type: NotificationType,
@@ -37,7 +47,51 @@ export class NotificationsService {
       metadata,
     });
 
-    return this.notificationsRepository.save(notification);
+    const saved = await this.notificationsRepository.save(notification);
+
+    // ✅ P1: Emit real-time WebSocket event
+    this.eventsGateway.emitNewNotification(userId, {
+      id: saved.id,
+      type: saved.type,
+      title: saved.title,
+      message: saved.message,
+    });
+
+    // ✅ P1: Also send FCM push notification (fire-and-forget)
+    this.sendPushToUser(userId, title, message, metadata).catch((err) =>
+      this.logger.warn(`Push notification failed for ${userId}: ${err?.message}`),
+    );
+
+    return saved;
+  }
+
+  // ✅ P1: Fetch user's FCM token and send push
+  private async sendPushToUser(
+    userId: string,
+    title: string,
+    body: string,
+    metadata?: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const user = await this.usersRepository.findOne({
+        where: { id: userId },
+        select: ['id', 'fcm_token'],
+      });
+
+      if (!user?.fcm_token) return;
+
+      // Convert metadata to string map for FCM data payload
+      const data: Record<string, string> = {};
+      if (metadata) {
+        for (const [k, v] of Object.entries(metadata)) {
+          if (v != null) data[k] = String(v);
+        }
+      }
+
+      await this.fcmService.sendToDevice(user.fcm_token, { title, body }, data);
+    } catch (err) {
+      this.logger.warn(`Failed to fetch FCM token for ${userId}: ${err?.message}`);
+    }
   }
 
   // ─── GET USER NOTIFICATIONS ───────────────────────────
