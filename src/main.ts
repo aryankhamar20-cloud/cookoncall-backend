@@ -6,10 +6,14 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { seedAdmins } from './seed-admins';
 import { setupSwagger } from './config/swagger.config';
+import { initSentry } from './common/services/sentry.service';
 import helmet from 'helmet';
 import compression from 'compression';
 
 async function bootstrap() {
+  // ─── Sentry MUST init before NestFactory so it captures bootstrap errors ───
+  initSentry();
+
   const app = await NestFactory.create(AppModule);
 
   // Security
@@ -19,15 +23,38 @@ async function bootstrap() {
   }));
   app.use(compression());
 
-  // CORS
+  // ─── CORS — exact-match allowlist (no broad wildcards) ───
+  // Cloudflare Pages preview URLs use deterministic 8-char hex hashes,
+  // so we allow ONLY <hex>.cookoncall.pages.dev and explicit branch previews.
+  const exactAllowed = new Set<string>([
+    'https://cookoncall.pages.dev',
+    'https://thecookoncall.com',
+    'https://www.thecookoncall.com',
+  ]);
+  if (process.env.NODE_ENV !== 'production') {
+    exactAllowed.add(process.env.FRONTEND_URL || 'http://localhost:3000');
+    exactAllowed.add('http://localhost:3000');
+    exactAllowed.add('http://localhost:3001');
+  }
+  // Cloudflare Pages preview deployment URL pattern: <8-hex>.cookoncall.pages.dev
+  const cfPreviewHash = /^https:\/\/[a-f0-9]{8}\.cookoncall\.pages\.dev$/;
+  // Cloudflare Pages branch preview URL pattern: <branch-slug>.cookoncall.pages.dev
+  // (branch slug = lowercase letters, digits, hyphens)
+  const cfBranchPreview = /^https:\/\/[a-z0-9-]{1,63}\.cookoncall\.pages\.dev$/;
+
   app.enableCors({
-    origin: [
-      process.env.FRONTEND_URL || 'http://localhost:3000',
-      'https://cookoncall.pages.dev',
-      'https://thecookoncall.com',
-      'https://www.thecookoncall.com',
-      /\.cookoncall\.pages\.dev$/,
-    ],
+    origin: (origin, callback) => {
+      // Allow non-browser requests (mobile app, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      if (
+        exactAllowed.has(origin) ||
+        cfPreviewHash.test(origin) ||
+        cfBranchPreview.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked origin: ${origin}`), false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

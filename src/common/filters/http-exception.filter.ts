@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import * as Sentry from '@sentry/node';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -45,8 +46,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
         exception.stack,
       );
       // NEVER leak raw DB / runtime errors to the client.
-      // Common offenders: TypeORM QueryFailedError ("column X does not exist"),
-      // EntityNotFoundError, raw Postgres errors, network errors.
       const isInternal =
         /QueryFailed|TypeORM|EntityNotFound|column .* does not exist|relation .* does not exist|ECONN|ETIMEDOUT|ENOTFOUND/i.test(
           exception.message,
@@ -54,6 +53,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message = isInternal
         ? 'Something went wrong on our end. Please try again in a moment.'
         : exception.message;
+    }
+
+    // ─── Forward 5xx + non-HttpException errors to Sentry ───
+    // We deliberately skip 4xx (client errors / validation) — those would be noise.
+    if (status >= 500 || !(exception instanceof HttpException)) {
+      try {
+        const userId = (request as any).user?.id;
+        Sentry.withScope((scope) => {
+          scope.setTag('route', `${request.method} ${request.route?.path ?? request.url}`);
+          scope.setTag('status', String(status));
+          if (userId) scope.setUser({ id: userId });
+          Sentry.captureException(exception);
+        });
+      } catch {
+        // never let observability break the response
+      }
     }
 
     response.status(status).json({
