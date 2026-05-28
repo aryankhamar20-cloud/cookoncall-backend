@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
+import { UpdateNotificationPreferencesDto } from './dto/notification-preferences.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -40,5 +41,21 @@ export class UsersController {
     @Body() dto: UpdateFcmTokenDto,
   ) {
     return this.usersService.updateFcmToken(user.id, dto.fcm_token);
+  }
+
+  // ─── ROUND 4: NOTIFICATION PREFERENCES ──────────────────
+  @Get('me/notification-preferences')
+  @ApiOperation({ summary: 'Get current user notification channel preferences' })
+  async getNotificationPreferences(@CurrentUser() user: User) {
+    return this.usersService.getNotificationPreferences(user.id);
+  }
+
+  @Patch('me/notification-preferences')
+  @ApiOperation({ summary: 'Update current user notification channel preferences' })
+  async updateNotificationPreferences(
+    @CurrentUser() user: User,
+    @Body() dto: UpdateNotificationPreferencesDto,
+  ) {
+    return this.usersService.updateNotificationPreferences(user.id, dto);
   }
 }

@@ -593,38 +593,58 @@ export class AdminService {
   /**
    * Resolve a target audience to a list of (userId, fcmToken|null, role).
    * Always uses `is_active = true` so we never push to blocked accounts.
+   *
+   * Round 4: also gates on `push_enabled` so users who muted push from
+   * Settings → Notifications are excluded from FCM fan-out. They still
+   * receive the in-app row (admin broadcasts are operational and need
+   * to be visible inside the app even if push is muted), so we return
+   * the full audience and the caller decides which subset gets FCM.
+   * The returned `fcm_token` is forced to null when push is disabled
+   * so the caller can keep its existing "filter tokens that exist"
+   * logic untouched.
    */
   private async resolveBroadcastRecipients(
     audience: BroadcastAudience,
     areaSlug?: string,
   ): Promise<Array<{ id: string; fcm_token: string | null }>> {
+    const sanitize = (
+      rows: Array<{ id: string; fcm_token: string | null; push_enabled?: boolean }>,
+    ) =>
+      rows.map((r) => ({
+        id: r.id,
+        // Drop the token (so we don't push) when the user opted out.
+        fcm_token: r.push_enabled === false ? null : r.fcm_token,
+      }));
+
     if (audience === BroadcastAudience.ALL) {
-      return this.usersRepository.find({
+      const rows = await this.usersRepository.find({
         where: [{ is_active: true, role: UserRole.USER }, { is_active: true, role: UserRole.COOK }],
-        select: { id: true, fcm_token: true } as any,
-      }) as any;
+        select: { id: true, fcm_token: true, push_enabled: true } as any,
+      });
+      return sanitize(rows as any);
     }
     if (audience === BroadcastAudience.CUSTOMERS) {
-      return this.usersRepository.find({
+      const rows = await this.usersRepository.find({
         where: { is_active: true, role: UserRole.USER },
-        select: { id: true, fcm_token: true } as any,
-      }) as any;
+        select: { id: true, fcm_token: true, push_enabled: true } as any,
+      });
+      return sanitize(rows as any);
     }
     if (audience === BroadcastAudience.COOKS) {
-      return this.usersRepository.find({
+      const rows = await this.usersRepository.find({
         where: { is_active: true, role: UserRole.COOK },
-        select: { id: true, fcm_token: true } as any,
-      }) as any;
+        select: { id: true, fcm_token: true, push_enabled: true } as any,
+      });
+      return sanitize(rows as any);
     }
     if (audience === BroadcastAudience.AREA) {
       // Customers in a given area. We don't store area on `users` directly;
-      // we look at their addresses table for the area_slug match. If no
-      // addresses module is exported here we fall back to a raw query.
+      // we look at their addresses table for the area_slug match.
       if (!areaSlug) {
         throw new BadRequestException('area_slug is required for audience=area.');
       }
       const rows = await this.usersRepository.query(
-        `SELECT DISTINCT u.id, u.fcm_token
+        `SELECT DISTINCT u.id, u.fcm_token, u.push_enabled
          FROM users u
          INNER JOIN addresses a ON a.user_id = u.id
          WHERE u.is_active = true
@@ -632,7 +652,7 @@ export class AdminService {
            AND a.area_slug = $1`,
         [areaSlug],
       );
-      return rows;
+      return sanitize(rows);
     }
     return [];
   }

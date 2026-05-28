@@ -43,6 +43,61 @@ export class UsersService {
     return user?.fcm_token || null;
   }
 
+  // ─── NOTIFICATION PREFERENCES (Round 4) ─────────────
+  /**
+   * Returns just the notification flags for the current user. Used by
+   * the Settings → Notifications screen on web + Flutter so we don't
+   * have to ship the entire user payload (which contains PII) on
+   * every settings open.
+   */
+  async getNotificationPreferences(userId: string) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'push_enabled', 'email_enabled', 'sms_enabled'],
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return {
+      push_enabled: user.push_enabled,
+      email_enabled: user.email_enabled,
+      sms_enabled: user.sms_enabled,
+    };
+  }
+
+  /**
+   * Patches any subset of {push, email, sms}. We use a TypeORM update
+   * (not save) because we don't want to accidentally overwrite other
+   * columns the controller didn't touch.
+   *
+   * Returns the new preferences so the UI can update its local state
+   * from the server's truth (in case validation rounded things).
+   */
+  async updateNotificationPreferences(
+    userId: string,
+    dto: { push_enabled?: boolean; email_enabled?: boolean; sms_enabled?: boolean },
+  ) {
+    // Strip undefined so they don't overwrite columns with null.
+    const patch: Record<string, boolean> = {};
+    if (typeof dto.push_enabled === 'boolean') patch.push_enabled = dto.push_enabled;
+    if (typeof dto.email_enabled === 'boolean') patch.email_enabled = dto.email_enabled;
+    if (typeof dto.sms_enabled === 'boolean') patch.sms_enabled = dto.sms_enabled;
+
+    if (Object.keys(patch).length > 0) {
+      await this.usersRepository.update(userId, patch);
+    }
+    return this.getNotificationPreferences(userId);
+  }
+
+  /** Returns just the channel flags — used by NotificationsService
+   *  to decide whether to enqueue email/SMS for a given user. */
+  async getChannels(userId: string) {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'email', 'phone', 'fcm_token', 'push_enabled', 'email_enabled', 'sms_enabled'],
+    });
+    if (!user) return null;
+    return user;
+  }
+
   async getUserStats(userId: string) {
     const totalBookings = await this.bookingsRepository.count({
       where: { user_id: userId },
