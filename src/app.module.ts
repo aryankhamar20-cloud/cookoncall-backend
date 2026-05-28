@@ -22,6 +22,9 @@ import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { ErrorsModule } from './modules/errors/errors.module';
+import { HealthModule } from './modules/health/health.module';
+import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
+import { ReferralsModule } from './modules/referrals/referrals.module';
 // add SchedulerModule to the imports array
 
 @Module({
@@ -79,6 +82,9 @@ import { ErrorsModule } from './modules/errors/errors.module';
     MealPackagesModule,
     AreasModule,
     ErrorsModule,
+    HealthModule,
+    PromoCodesModule,
+    ReferralsModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints

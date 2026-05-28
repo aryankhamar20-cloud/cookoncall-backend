@@ -73,6 +73,10 @@ export class User {
   @Column({ default: true })
   is_active: boolean;
 
+  // ✅ P1: FCM token for push notifications
+  @Column({ nullable: true, length: 500 })
+  fcm_token: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

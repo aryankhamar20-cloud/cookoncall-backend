@@ -30,6 +30,12 @@ export class UsersService {
     return this.findById(userId);
   }
 
+  // ✅ P1: Save FCM token for push notifications
+  async updateFcmToken(userId: string, fcmToken: string) {
+    await this.usersRepository.update(userId, { fcm_token: fcmToken });
+    return { message: 'FCM token updated' };
+  }
+
   async getUserStats(userId: string) {
     const totalBookings = await this.bookingsRepository.count({
       where: { user_id: userId },
