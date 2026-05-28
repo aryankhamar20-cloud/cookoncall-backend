@@ -3,49 +3,340 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PromoCode, PromoType } from './promo-code.entity';
 import { PromoCodeUsage } from './promo-code-usage.entity';
-import { CreatePromoCodeDto, ValidatePromoCodeDto } from './dto/promo-code.dto';
+import { AdminAuditLog } from '../admin/admin-audit.entity';
+import { AnalyticsService } from '../analytics/analytics.service';
+import {
+  CreatePromoCodeDto,
+  UpdatePromoCodeDto,
+  ValidatePromoCodeDto,
+} from './dto/promo-code.dto';
+import { User } from '../users/user.entity';
+
+/**
+ * Lightweight metadata carried from the controller into the service so
+ * we can record IP / UA on the admin audit row without coupling the
+ * service to the Express Request type.
+ */
+export interface PromoAuditMeta {
+  ip: string | null;
+  userAgent: string | null;
+}
 
 @Injectable()
 export class PromoCodesService {
+  private readonly logger = new Logger(PromoCodesService.name);
+
   constructor(
     @InjectRepository(PromoCode)
     private promoRepo: Repository<PromoCode>,
     @InjectRepository(PromoCodeUsage)
     private usageRepo: Repository<PromoCodeUsage>,
+    // The audit-log table is owned by AdminModule but it's a plain
+    // entity, so we just register it on this module's TypeORM feature
+    // to inject the repository here. Avoids a circular dep with
+    // AdminService.
+    @InjectRepository(AdminAuditLog)
+    private auditRepo: Repository<AdminAuditLog>,
+    private readonly analytics: AnalyticsService,
   ) {}
 
+  /**
+   * Single audit-log helper. Mirrors AdminService.audit() so the rows
+   * for `promo.*` actions are queryable in the same UI.
+   */
+  private async writeAudit(
+    admin: User | null,
+    action: string,
+    targetId: string | null,
+    details: Record<string, any>,
+    meta: PromoAuditMeta,
+  ): Promise<void> {
+    try {
+      await this.auditRepo.save(
+        this.auditRepo.create({
+          admin_user_id: admin?.id ?? null,
+          admin_name: admin?.name ?? null,
+          action,
+          target_type: 'promo_code',
+          target_id: targetId,
+          details,
+          ip_address: meta.ip,
+          user_agent: meta.userAgent,
+        }),
+      );
+    } catch (err: any) {
+      // Audit write must NEVER block the action. Log and move on.
+      this.logger.error(
+        `Failed to write audit row for ${action}: ${err?.message || err}`,
+      );
+    }
+  }
+
   // ─── ADMIN: Create a promo code ───────────────────────
-  async create(dto: CreatePromoCodeDto): Promise<PromoCode> {
+  async create(
+    dto: CreatePromoCodeDto,
+    admin: User,
+    meta: PromoAuditMeta,
+  ): Promise<PromoCode> {
+    const upperCode = dto.code.toUpperCase();
     const existing = await this.promoRepo.findOne({
-      where: { code: dto.code.toUpperCase() },
+      where: { code: upperCode },
     });
     if (existing) throw new ConflictException('Promo code already exists');
 
+    // PERCENTAGE rules: value must be 0..100; FLAT/FREE_VISIT: any non-neg.
+    if (dto.type === PromoType.PERCENTAGE && (dto.value < 0 || dto.value > 100)) {
+      throw new BadRequestException(
+        'Percentage promo value must be between 0 and 100.',
+      );
+    }
+
     const promo = this.promoRepo.create({
       ...dto,
-      code: dto.code.toUpperCase(),
+      code: upperCode,
+      // Tolerate "" empty-string from the form; the column is nullable.
       expires_at: dto.expires_at ? new Date(dto.expires_at) : null,
     });
 
-    return this.promoRepo.save(promo);
+    const saved = await this.promoRepo.save(promo);
+
+    await this.writeAudit(
+      admin,
+      'promo.create',
+      saved.id,
+      {
+        code: saved.code,
+        type: saved.type,
+        value: saved.value,
+        expires_at: saved.expires_at,
+      },
+      meta,
+    );
+    this.analytics
+      .track({
+        event_type: 'admin_promo_created',
+        user_id: admin?.id ?? null,
+        user_role: 'admin',
+        metadata: {
+          promo_id: saved.id,
+          code: saved.code,
+          type: saved.type,
+        },
+        ip_address: meta.ip,
+        user_agent: meta.userAgent,
+      })
+      .catch(() => undefined);
+
+    return saved;
   }
 
   // ─── ADMIN: List all promo codes ──────────────────────
-  async findAll(): Promise<PromoCode[]> {
-    return this.promoRepo.find({ order: { created_at: 'DESC' } });
+  /**
+   * Optional `status` filter:
+   *   active   — is_active=true AND (expires_at IS NULL OR expires_at > now)
+   *               AND (max_uses IS NULL OR used_count < max_uses)
+   *   inactive — is_active=false
+   *   expired  — expires_at <= now (regardless of is_active)
+   *   exhausted— used_count >= max_uses
+   *
+   * Without a filter the admin gets every promo, newest first.
+   */
+  async findAll(status?: string): Promise<PromoCode[]> {
+    const qb = this.promoRepo.createQueryBuilder('p').orderBy('p.created_at', 'DESC');
+    if (status === 'active') {
+      qb.andWhere('p.is_active = true')
+        .andWhere('(p.expires_at IS NULL OR p.expires_at > NOW())')
+        .andWhere('(p.max_uses IS NULL OR p.used_count < p.max_uses)');
+    } else if (status === 'inactive') {
+      qb.andWhere('p.is_active = false');
+    } else if (status === 'expired') {
+      qb.andWhere('p.expires_at IS NOT NULL').andWhere('p.expires_at <= NOW()');
+    } else if (status === 'exhausted') {
+      qb.andWhere('p.max_uses IS NOT NULL').andWhere('p.used_count >= p.max_uses');
+    }
+    return qb.getMany();
+  }
+
+  // ─── ADMIN: Get one promo code ────────────────────────
+  async findOne(id: string): Promise<PromoCode> {
+    const promo = await this.promoRepo.findOne({ where: { id } });
+    if (!promo) throw new NotFoundException('Promo code not found');
+    return promo;
+  }
+
+  // ─── ADMIN: Update a promo code ──────────────────────
+  /**
+   * Edits any field except `code`. `code` is immutable — see DTO comment.
+   */
+  async update(
+    id: string,
+    dto: UpdatePromoCodeDto,
+    admin: User,
+    meta: PromoAuditMeta,
+  ): Promise<PromoCode> {
+    const promo = await this.findOne(id);
+    const before = {
+      type: promo.type,
+      value: promo.value,
+      max_discount: promo.max_discount,
+      min_order_amount: promo.min_order_amount,
+      single_use: promo.single_use,
+      max_uses: promo.max_uses,
+      expires_at: promo.expires_at,
+      description: promo.description,
+      is_active: promo.is_active,
+    };
+
+    if (dto.type === PromoType.PERCENTAGE && dto.value != null) {
+      if (dto.value < 0 || dto.value > 100) {
+        throw new BadRequestException(
+          'Percentage promo value must be between 0 and 100.',
+        );
+      }
+    }
+
+    Object.assign(promo, dto);
+    if (dto.expires_at !== undefined) {
+      promo.expires_at = dto.expires_at ? new Date(dto.expires_at) : null;
+    }
+
+    const saved = await this.promoRepo.save(promo);
+
+    await this.writeAudit(
+      admin,
+      'promo.update',
+      saved.id,
+      { code: saved.code, before, after: dto },
+      meta,
+    );
+
+    return saved;
   }
 
   // ─── ADMIN: Toggle active status ─────────────────────
-  async toggle(id: string): Promise<PromoCode> {
-    const promo = await this.promoRepo.findOne({ where: { id } });
-    if (!promo) throw new NotFoundException('Promo code not found');
+  async toggle(
+    id: string,
+    admin: User,
+    meta: PromoAuditMeta,
+  ): Promise<PromoCode> {
+    const promo = await this.findOne(id);
     promo.is_active = !promo.is_active;
-    return this.promoRepo.save(promo);
+    const saved = await this.promoRepo.save(promo);
+
+    await this.writeAudit(
+      admin,
+      'promo.toggle',
+      saved.id,
+      { code: saved.code, is_active: saved.is_active },
+      meta,
+    );
+
+    return saved;
+  }
+
+  // ─── ADMIN: Delete a promo code ──────────────────────
+  /**
+   * Hard-delete is allowed ONLY when the promo has never been used,
+   * so we don't orphan analytics or break the customer's "you used
+   * promo X" history. If `used_count > 0` we surface a 409 with a
+   * clear message asking the admin to deactivate instead. The UI
+   * surfaces both options.
+   */
+  async remove(
+    id: string,
+    admin: User,
+    meta: PromoAuditMeta,
+  ): Promise<{ deleted: boolean; message: string }> {
+    const promo = await this.findOne(id);
+    if (promo.used_count > 0) {
+      throw new ConflictException(
+        `Promo code "${promo.code}" has been used ${promo.used_count} time(s) ` +
+          `and cannot be deleted. Deactivate it instead to stop new redemptions.`,
+      );
+    }
+
+    await this.promoRepo.remove(promo);
+
+    await this.writeAudit(
+      admin,
+      'promo.delete',
+      id,
+      { code: promo.code, type: promo.type, value: promo.value },
+      meta,
+    );
+    this.analytics
+      .track({
+        event_type: 'admin_promo_deleted',
+        user_id: admin?.id ?? null,
+        user_role: 'admin',
+        metadata: { promo_id: id, code: promo.code },
+        ip_address: meta.ip,
+        user_agent: meta.userAgent,
+      })
+      .catch(() => undefined);
+
+    return { deleted: true, message: `Promo code "${promo.code}" deleted.` };
+  }
+
+  // ─── ADMIN: List who used a promo ────────────────────
+  async listUsages(
+    promoId: string,
+    page = 1,
+    limit = 50,
+  ): Promise<{
+    promo: PromoCode;
+    usages: any[];
+    pagination: { page: number; limit: number; total: number; total_pages: number };
+  }> {
+    const promo = await this.findOne(promoId);
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await this.usageRepo.findAndCount({
+      where: { promo_code_id: promoId },
+      order: { used_at: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    // The usage rows reference users + bookings by id only. Hydrate
+    // names in a single query rather than letting the UI fan-out
+    // dozens of GETs.
+    const userIds = Array.from(new Set(rows.map((r) => r.user_id))).filter(Boolean);
+    let userMap = new Map<string, { name: string; email: string }>();
+    if (userIds.length > 0) {
+      const users = await this.usageRepo.query(
+        `SELECT id, name, email FROM users WHERE id = ANY($1::uuid[])`,
+        [userIds],
+      );
+      userMap = new Map(users.map((u: any) => [u.id, { name: u.name, email: u.email }]));
+    }
+
+    const usages = rows.map((r) => ({
+      id: r.id,
+      user_id: r.user_id,
+      user_name: userMap.get(r.user_id)?.name ?? null,
+      user_email: userMap.get(r.user_id)?.email ?? null,
+      booking_id: r.booking_id,
+      discount_applied: Number(r.discount_applied),
+      used_at: r.used_at,
+    }));
+
+    return {
+      promo,
+      usages,
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: Math.ceil(total / limit),
+      },
+    };
   }
 
   // ─── CUSTOMER: Validate promo code ───────────────────
