@@ -10,14 +10,19 @@ export const databaseConfig = (configService: ConfigService): TypeOrmModuleOptio
   extra: {
     ssl: { rejectUnauthorized: false },
     family: 4,
-    // Connection pool settings
-    max: 5,
-    min: 1,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
+    // Connection pool — bumped from 5 → 20 to handle ~10k concurrent users
+    // without queuing. Supabase Session Pooler default cap per service is 60,
+    // so 20 leaves plenty of headroom for migrations / cron jobs.
+    max: 20,
+    min: 2,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    // Kill any single query that runs longer than 30s — runaway joins or a
+    // missing index will be cancelled before they exhaust the pool.
+    statement_timeout: 30_000,
     // Keepalive to prevent Supabase Session Pooler from dropping idle connections
     keepAlive: true,
-    keepAliveInitialDelayMillis: 10000,
+    keepAliveInitialDelayMillis: 10_000,
   },
   // TypeORM retry settings
   retryAttempts: 5,
