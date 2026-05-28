@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class SendOtpDto {
   @Matches(/^[6-9]\d{9}$/, { message: 'Enter a valid 10-digit Indian phone number' })
@@ -63,4 +63,18 @@ export class GoogleAuthDto {
   @IsString()
   @IsNotEmpty()
   token: string;
+
+  /**
+   * Round 4 — only honored when this is a brand-new account (no
+   * matching `users.email` row). Existing accounts keep their role
+   * regardless of what the client sends, so a Chef can't be silently
+   * downgraded to Customer (or vice-versa) by signing in through the
+   * wrong "Sign up as ..." button.
+   *
+   * Defaults to 'user' on the server when omitted.
+   */
+  @IsString()
+  @IsOptional()
+  @IsIn(['user', 'cook'])
+  role?: 'user' | 'cook';
 }
