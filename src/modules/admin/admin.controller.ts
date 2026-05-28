@@ -6,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -18,6 +19,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User, UserRole } from '../users/user.entity';
 import { BookingStatus } from '../bookings/booking.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CreateBroadcastDto } from './dto/broadcast.dto';
 
 // Small helper: extracts IP + user-agent from the request for audit logging.
 function auditMeta(req: Request) {
@@ -190,5 +192,36 @@ export class AdminController {
     @Req() req: Request,
   ) {
     return this.adminService.deleteBooking(id, admin, auditMeta(req));
+  }
+
+  // ─── ROUND 3: BROADCAST PUSH NOTIFICATIONS ──────────
+  /**
+   * Send a push + in-app notification to a target audience.
+   *
+   * Audiences:
+   *   - all        : every active user (customers + chefs + admins-not)
+   *   - customers  : every active user with role=user
+   *   - cooks      : every active user with role=cook
+   *   - area       : customers in a specific service-area slug
+   *
+   * Returns the broadcast row so the admin UI can show the delivery
+   * counters immediately.
+   */
+  @Post('notifications/broadcast')
+  async sendBroadcast(
+    @Body() dto: CreateBroadcastDto,
+    @CurrentUser() admin: User,
+    @Req() req: Request,
+  ) {
+    return this.adminService.sendBroadcast(dto, admin, auditMeta(req));
+  }
+
+  /** Last 50 broadcasts for the admin UI. */
+  @Get('notifications/broadcasts')
+  async listBroadcasts(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.adminService.listBroadcasts(page || 1, limit || 50);
   }
 }

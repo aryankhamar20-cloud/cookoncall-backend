@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { MealPackagesService } from './meal-packages.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -25,11 +26,26 @@ import {
   CreatePackageAddonDto,
   UpdatePackageAddonDto,
 } from './dto/meal-package.dto';
+import {
+  CacheResponse,
+  ResponseCacheInterceptor,
+} from '../../common/interceptors/response-cache.interceptor';
 
 @Controller('meal-packages')
 export class MealPackagesController {
   constructor(private readonly svc: MealPackagesService) {}
+
+  // Round 3: 5-min Redis cache. Per-cook key (`:cookId` is in the URL
+  // and `vary: ['url']` already includes it). Cache is busted whenever
+  // that cook mutates a package, category, dish or add-on.
   @Public()
+  @UseInterceptors(ResponseCacheInterceptor)
+  @CacheResponse({
+    prefix: 'meal-packages:cook',
+    ttl: 300,
+    vary: ['url'],
+    cacheControl: 'public, max-age=60, stale-while-revalidate=300',
+  })
   @Get('cook/:cookId')
   getCookPackages(@Param('cookId', ParseUUIDPipe) cookId: string) {
     return this.svc.getCookPackages(cookId);

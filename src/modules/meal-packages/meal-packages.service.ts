@@ -20,6 +20,7 @@ import {
   CreatePackageAddonDto,
   UpdatePackageAddonDto,
 } from './dto/meal-package.dto';
+import { RedisCacheService } from '../../common/services/redis-cache.service';
 
 @Injectable()
 export class MealPackagesService {
@@ -34,7 +35,15 @@ export class MealPackagesService {
     private readonly addonRepo: Repository<PackageAddon>,
     @InjectRepository(Cook)
     private readonly cookRepo: Repository<Cook>,
+    private readonly cache: RedisCacheService,
   ) {}
+
+  /** Round 3 — bust the public per-cook package list when chef mutates anything. */
+  private async _invalidateCookCache(cookId: string): Promise<void> {
+    // Key shape: cache:meal-packages:cook|/api/v1/meal-packages/cook/<cookId>|...
+    // Prefix scan covers it.
+    await this.cache.delByPrefix(`cache:meal-packages:cook`);
+  }
 
   // ─── CHEF: MY PACKAGES ───────────────────────────────────────────────────
 
@@ -84,7 +93,9 @@ export class MealPackagesService {
       pkg.addons = dto.addons.map((a) => this.addonRepo.create(a));
     }
 
-    return this.packageRepo.save(pkg);
+    const saved = await this.packageRepo.save(pkg);
+    this._invalidateCookCache(cook.id).catch(() => undefined);
+    return saved;
   }
 
   async updatePackage(
@@ -94,12 +105,15 @@ export class MealPackagesService {
   ): Promise<MealPackage> {
     const pkg = await this._ownPackage(userId, packageId);
     Object.assign(pkg, dto);
-    return this.packageRepo.save(pkg);
+    const saved = await this.packageRepo.save(pkg);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async deletePackage(userId: string, packageId: string): Promise<void> {
     const pkg = await this._ownPackage(userId, packageId);
     await this.packageRepo.remove(pkg);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
   }
 
   // ─── CATEGORIES ──────────────────────────────────────────────────────────
@@ -109,7 +123,7 @@ export class MealPackagesService {
     packageId: string,
     dto: CreatePackageCategoryDto,
   ): Promise<PackageCategory> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
 
     const cat = this.categoryRepo.create({
       package_id: packageId,
@@ -121,7 +135,9 @@ export class MealPackagesService {
       dishes: (dto.dishes ?? []).map((d) => this.dishRepo.create(d)),
     });
 
-    return this.categoryRepo.save(cat);
+    const saved = await this.categoryRepo.save(cat);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async updateCategory(
@@ -130,13 +146,15 @@ export class MealPackagesService {
     categoryId: string,
     dto: UpdatePackageCategoryDto,
   ): Promise<PackageCategory> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const cat = await this.categoryRepo.findOne({
       where: { id: categoryId, package_id: packageId },
     });
     if (!cat) throw new NotFoundException('Category not found');
     Object.assign(cat, dto);
-    return this.categoryRepo.save(cat);
+    const saved = await this.categoryRepo.save(cat);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async deleteCategory(
@@ -144,12 +162,13 @@ export class MealPackagesService {
     packageId: string,
     categoryId: string,
   ): Promise<void> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const cat = await this.categoryRepo.findOne({
       where: { id: categoryId, package_id: packageId },
     });
     if (!cat) throw new NotFoundException('Category not found');
     await this.categoryRepo.remove(cat);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
   }
 
   // ─── DISHES ──────────────────────────────────────────────────────────────
@@ -160,13 +179,15 @@ export class MealPackagesService {
     categoryId: string,
     dto: CreatePackageCategoryDishDto,
   ): Promise<PackageCategoryDish> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const cat = await this.categoryRepo.findOne({
       where: { id: categoryId, package_id: packageId },
     });
     if (!cat) throw new NotFoundException('Category not found');
     const dish = this.dishRepo.create({ ...dto, category_id: categoryId });
-    return this.dishRepo.save(dish);
+    const saved = await this.dishRepo.save(dish);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async updateDish(
@@ -176,13 +197,15 @@ export class MealPackagesService {
     dishId: string,
     dto: UpdatePackageCategoryDishDto,
   ): Promise<PackageCategoryDish> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const dish = await this.dishRepo.findOne({
       where: { id: dishId, category_id: categoryId },
     });
     if (!dish) throw new NotFoundException('Dish not found');
     Object.assign(dish, dto);
-    return this.dishRepo.save(dish);
+    const saved = await this.dishRepo.save(dish);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async deleteDish(
@@ -191,12 +214,13 @@ export class MealPackagesService {
     categoryId: string,
     dishId: string,
   ): Promise<void> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const dish = await this.dishRepo.findOne({
       where: { id: dishId, category_id: categoryId },
     });
     if (!dish) throw new NotFoundException('Dish not found');
     await this.dishRepo.remove(dish);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
   }
 
   // ─── ADD-ONS ─────────────────────────────────────────────────────────────
@@ -206,9 +230,11 @@ export class MealPackagesService {
     packageId: string,
     dto: CreatePackageAddonDto,
   ): Promise<PackageAddon> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const addon = this.addonRepo.create({ ...dto, package_id: packageId });
-    return this.addonRepo.save(addon);
+    const saved = await this.addonRepo.save(addon);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async updateAddon(
@@ -217,13 +243,15 @@ export class MealPackagesService {
     addonId: string,
     dto: UpdatePackageAddonDto,
   ): Promise<PackageAddon> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const addon = await this.addonRepo.findOne({
       where: { id: addonId, package_id: packageId },
     });
     if (!addon) throw new NotFoundException('Add-on not found');
     Object.assign(addon, dto);
-    return this.addonRepo.save(addon);
+    const saved = await this.addonRepo.save(addon);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    return saved;
   }
 
   async deleteAddon(
@@ -231,12 +259,13 @@ export class MealPackagesService {
     packageId: string,
     addonId: string,
   ): Promise<void> {
-    await this._ownPackage(userId, packageId);
+    const pkg = await this._ownPackage(userId, packageId);
     const addon = await this.addonRepo.findOne({
       where: { id: addonId, package_id: packageId },
     });
     if (!addon) throw new NotFoundException('Add-on not found');
     await this.addonRepo.remove(addon);
+    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
   }
 
   // ─── PUBLIC ──────────────────────────────────────────────────────────────
