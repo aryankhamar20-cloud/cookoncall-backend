@@ -28,6 +28,7 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
@@ -36,6 +37,10 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
       isGlobal: true,
       envFilePath: '.env',
     }),
+
+    // Shared infrastructure (Redis cache, response-cache interceptor) —
+    // marked @Global so feature modules can use it without re-importing.
+    CommonModule,
 
     // Database
     TypeOrmModule.forRootAsync({

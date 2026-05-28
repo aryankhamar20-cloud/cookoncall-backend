@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ServiceArea, AreaRequest, RequesterRole } from './area.entity';
 import { ApproveAreaDto, RequestAreaDto, slugifyAreaName } from './dto/area.dto';
+import { RedisCacheService } from '../../common/services/redis-cache.service';
 
 @Injectable()
 export class AreasService {
@@ -16,7 +17,13 @@ export class AreasService {
     private areasRepo: Repository<ServiceArea>,
     @InjectRepository(AreaRequest)
     private requestsRepo: Repository<AreaRequest>,
+    private readonly cache: RedisCacheService,
   ) {}
+
+  /** Round 3 — invalidate the public /areas listing cache. */
+  private async invalidateCache(): Promise<void> {
+    await this.cache.delByPrefix('cache:areas:list');
+  }
 
   // ─── PUBLIC: list active areas ─────────────────────────
   async listActive(city?: string) {
@@ -145,6 +152,9 @@ export class AreasService {
     req.reviewed_by = adminId;
     req.reviewed_at = new Date();
     await this.requestsRepo.save(req);
+
+    // New active area went live — bust the public listing cache.
+    this.invalidateCache().catch(() => undefined);
 
     return { area: savedArea, request: req };
   }

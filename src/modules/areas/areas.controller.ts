@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AreasService } from './areas.service';
 import { ApproveAreaDto, RejectAreaDto, RequestAreaDto } from './dto/area.dto';
@@ -17,6 +18,10 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User, UserRole } from '../users/user.entity';
 import { Public } from '../../common/decorators/public.decorator';
+import {
+  CacheResponse,
+  ResponseCacheInterceptor,
+} from '../../common/interceptors/response-cache.interceptor';
 
 @Controller('areas')
 export class AreasController {
@@ -24,7 +29,16 @@ export class AreasController {
 
   // ─── PUBLIC: list active areas ─────────────────────────
   // Customers and chefs both call this to populate dropdowns.
+  // Round 3: cached for 10 min — service areas change rarely (admin
+  // approval/reject) and this endpoint is hit on every page load.
   @Public()
+  @UseInterceptors(ResponseCacheInterceptor)
+  @CacheResponse({
+    prefix: 'areas:list',
+    ttl: 600,
+    vary: ['url'],
+    cacheControl: 'public, max-age=300, stale-while-revalidate=600',
+  })
   @Get()
   async list(@Query('city') city?: string) {
     return this.areasService.listActive(city);

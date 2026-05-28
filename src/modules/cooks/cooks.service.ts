@@ -10,6 +10,7 @@ import { Cook, VerificationStatus } from './cook.entity';
 import { MenuItem } from './menu-item.entity';
 import { User, UserRole } from '../users/user.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
+import { Payment, PaymentStatus } from '../payments/payment.entity';
 import {
   CreateCookProfileDto,
   UpdateCookProfileDto,
@@ -18,6 +19,7 @@ import {
   SearchCooksDto,
   SubmitVerificationDto,
 } from './dto/cook.dto';
+import { RedisCacheService } from '../../common/services/redis-cache.service';
 
 @Injectable()
 export class CooksService {
@@ -30,7 +32,32 @@ export class CooksService {
     private usersRepository: Repository<User>,
     @InjectRepository(Booking)
     private bookingsRepository: Repository<Booking>,
+    @InjectRepository(Payment)
+    private paymentsRepository: Repository<Payment>,
+    private readonly cache: RedisCacheService,
   ) {}
+
+  /**
+   * Round 3 — invalidate every public-facing chef cache key.
+   * Called whenever a chef profile changes, menu changes, or
+   * admin toggles verification. Safe to call without awaiting.
+   */
+  private async invalidateCacheOnWrite(cookId?: string): Promise<void> {
+    await Promise.all([
+      this.cache.delByPrefix('cache:cooks:list'),
+      this.cache.delByPrefix('cache:cooks:detail'),
+      this.cache.delByPrefix('cache:cooks:menu'),
+      cookId
+        ? this.cache.delByPrefix(`cache:meal-packages:cook:${cookId}`)
+        : Promise.resolve(),
+    ]);
+  }
+
+  /** Public wrapper so AdminService can bust the listing cache after
+   *  it verifies/rejects/deletes a cook. */
+  async invalidatePublicCache(cookId?: string): Promise<void> {
+    return this.invalidateCacheOnWrite(cookId);
+  }
 
   // ─── CREATE COOK PROFILE ──────────────────────────────
   async createProfile(userId: string, dto: CreateCookProfileDto) {
@@ -90,7 +117,11 @@ export class CooksService {
     }
 
     Object.assign(cook, dto);
-    return this.cooksRepository.save(cook);
+    const saved = await this.cooksRepository.save(cook);
+    // Round 3 — public chef listings & detail/menu must reflect the
+    // change immediately; bust caches now (fire-and-forget).
+    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    return saved;
   }
 
   // ─── SUBMIT VERIFICATION ─────────────────────────────
@@ -158,6 +189,9 @@ export class CooksService {
 
     cook.is_available = !cook.is_available;
     await this.cooksRepository.save(cook);
+    // Going online/offline changes whether the chef is in the public
+    // listing — invalidate caches.
+    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
     return { is_available: cook.is_available };
   }
 
@@ -286,7 +320,9 @@ export class CooksService {
       ...dto,
     });
 
-    return this.menuRepository.save(item);
+    const saved = await this.menuRepository.save(item);
+    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    return saved;
   }
 
   // ─── UPDATE MENU ITEM ────────────────────────────────
@@ -305,7 +341,9 @@ export class CooksService {
     }
 
     Object.assign(item, dto);
-    return this.menuRepository.save(item);
+    const saved = await this.menuRepository.save(item);
+    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    return saved;
   }
 
   // ─── DELETE MENU ITEM ─────────────────────────────────
@@ -320,6 +358,7 @@ export class CooksService {
     }
 
     await this.menuRepository.remove(item);
+    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
     return { message: 'Menu item deleted' };
   }
 
@@ -362,6 +401,133 @@ export class CooksService {
       month_earnings: parseFloat(monthResult?.total || '0'),
       week_earnings: parseFloat(weekResult?.total || '0'),
       completed_jobs: completedBookings,
+    };
+  }
+
+  // ─── ROUND 3 — PAYOUTS HISTORY ───────────────────────
+  /**
+   * Detailed per-booking payout history for a chef.
+   *
+   * One row per completed booking, joined with its payment row, so the
+   * UI can show:
+   *   - booking date & customer name
+   *   - gross collected from customer
+   *   - platform commission deducted
+   *   - net amount transferred to the chef
+   *   - payout status: paid (transfer succeeded) | pending (held) | refunded
+   *   - razorpay transfer id (for support / receipts)
+   *
+   * Query is paginated and indexed (idx_bookings_cook_id_status from
+   * Round 1 covers the WHERE clause).
+   */
+  async getMyPayouts(
+    userId: string,
+    page = 1,
+    limit = 20,
+    statusFilter?: string,
+  ) {
+    const cook = await this.findByUserId(userId);
+    const skip = (page - 1) * limit;
+
+    const qb = this.bookingsRepository
+      .createQueryBuilder('b')
+      .leftJoinAndSelect('b.user', 'u')
+      .leftJoin(Payment, 'p', 'p.booking_id = b.id')
+      .addSelect([
+        'p.id AS payment_id',
+        'p.status AS payment_status',
+        'p.platform_fee AS payment_platform_fee',
+        'p.cook_payout AS payment_cook_payout',
+        'p.razorpay_payment_id AS razorpay_payment_id',
+        'p.razorpay_transfer_id AS razorpay_transfer_id',
+        'p.paid_at AS paid_at',
+        'p.released_at AS released_at',
+        'p.refund_amount AS refund_amount',
+      ])
+      .where('b.cook_id = :cookId', { cookId: cook.id })
+      .andWhere('b.status = :status', { status: BookingStatus.COMPLETED })
+      .orderBy('b.completed_at', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    // Optional status filter — values come from PaymentStatus enum.
+    if (statusFilter) {
+      qb.andWhere('p.status = :pstatus', { pstatus: statusFilter });
+    }
+
+    const [rows, raw, total] = await Promise.all([
+      qb.getMany(),
+      qb.getRawMany(),
+      this.bookingsRepository.count({
+        where: { cook_id: cook.id, status: BookingStatus.COMPLETED },
+      }),
+    ]);
+
+    // getMany() drops the addSelect aliases; pair up by index.
+    const payouts = rows.map((booking, i) => {
+      const r = raw[i] || {};
+      const grossSubtotal = Number(booking.subtotal || 0);
+      const platformFee = Number(booking.platform_fee || 0);
+      const visitFee = Number(booking.visit_fee || 0);
+      // Net to chef = subtotal − platform commission. Visit fee is
+      // collected by the platform separately (logistics overhead) and
+      // does NOT count as chef income.
+      const computedNet = +(grossSubtotal - platformFee).toFixed(2);
+      const recordedNet = r.payment_cook_payout != null
+        ? Number(r.payment_cook_payout)
+        : computedNet;
+
+      return {
+        booking_id: booking.id,
+        completed_at: booking.completed_at,
+        scheduled_at: booking.scheduled_at,
+        customer_name: booking.user?.name ?? null,
+        gross_total: Number(booking.total_price || 0),
+        subtotal: grossSubtotal,
+        visit_fee: visitFee,
+        platform_commission: platformFee,
+        net_payout: recordedNet,
+        payment_status: r.payment_status ?? PaymentStatus.CREATED,
+        payment_id: r.payment_id ?? null,
+        razorpay_payment_id: r.razorpay_payment_id ?? null,
+        razorpay_transfer_id: r.razorpay_transfer_id ?? null,
+        paid_at: r.paid_at ?? null,
+        released_at: r.released_at ?? null,
+        refund_amount: r.refund_amount != null ? Number(r.refund_amount) : null,
+      };
+    });
+
+    // Aggregate totals (across ALL completed bookings for this chef,
+    // not just the current page). Single round-trip via raw query.
+    const totalsRaw = await this.bookingsRepository
+      .createQueryBuilder('b')
+      .leftJoin(Payment, 'p', 'p.booking_id = b.id')
+      .select('COALESCE(SUM(b.subtotal - b.platform_fee), 0)', 'lifetime_net')
+      .addSelect(
+        `COALESCE(SUM(b.subtotal - b.platform_fee) FILTER (WHERE p.status = 'captured'), 0)`,
+        'paid_net',
+      )
+      .addSelect(
+        `COALESCE(SUM(b.subtotal - b.platform_fee) FILTER (WHERE p.status IN ('created','authorized')), 0)`,
+        'pending_net',
+      )
+      .where('b.cook_id = :cookId', { cookId: cook.id })
+      .andWhere('b.status = :status', { status: BookingStatus.COMPLETED })
+      .getRawOne();
+
+    return {
+      payouts,
+      summary: {
+        lifetime_net: parseFloat(totalsRaw?.lifetime_net || '0'),
+        paid_net: parseFloat(totalsRaw?.paid_net || '0'),
+        pending_net: parseFloat(totalsRaw?.pending_net || '0'),
+      },
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: Math.ceil(total / limit),
+      },
     };
   }
 

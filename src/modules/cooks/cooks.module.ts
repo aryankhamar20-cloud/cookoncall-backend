@@ -6,9 +6,12 @@ import { Cook } from './cook.entity';
 import { MenuItem } from './menu-item.entity';
 import { User } from '../users/user.entity';
 import { Booking } from '../bookings/booking.entity';
+import { Payment } from '../payments/payment.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Cook, MenuItem, User, Booking])],
+  imports: [
+    TypeOrmModule.forFeature([Cook, MenuItem, User, Booking, Payment]),
+  ],
   controllers: [CooksController],
   providers: [CooksService],
   exports: [CooksService],

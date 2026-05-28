@@ -11,9 +11,17 @@ import { Cook, VerificationStatus } from '../cooks/cook.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 import { Review } from '../reviews/review.entity';
-import { Notification } from '../notifications/notification.entity';
+import { Notification, NotificationType } from '../notifications/notification.entity';
 import { AdminAuditLog } from './admin-audit.entity';
+import {
+  NotificationBroadcast,
+  BroadcastAudience,
+} from './notification-broadcast.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CooksService } from '../cooks/cooks.service';
+import { FcmService } from '../../common/services/fcm.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { CreateBroadcastDto } from './dto/broadcast.dto';
 
 type AuditMeta = { ip: string | null; userAgent: string | null };
 
@@ -36,7 +44,12 @@ export class AdminService {
     private notificationsRepository: Repository<Notification>,
     @InjectRepository(AdminAuditLog)
     private auditRepository: Repository<AdminAuditLog>,
+    @InjectRepository(NotificationBroadcast)
+    private broadcastsRepository: Repository<NotificationBroadcast>,
     private notificationsService: NotificationsService,
+    private readonly cooksService: CooksService,
+    private readonly fcmService: FcmService,
+    private readonly analyticsService: AnalyticsService,
   ) {}
 
   // ─── AUDIT HELPER ─────────────────────────────────────
@@ -364,6 +377,9 @@ export class AdminService {
           .catch(() => {});
       }
 
+      // Newly-verified chef now appears in /cooks listing — bust caches.
+      this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
+
       return { message: 'Cook verified successfully', cook };
     } else {
       cook.is_verified = false;
@@ -389,6 +405,9 @@ export class AdminService {
           .notifyCookRejected(cook.user_id, rejectionReason)
           .catch(() => {});
       }
+
+      // Rejected chef must drop out of /cooks listing too.
+      this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
 
       return { message: 'Cook verification rejected', cook };
     }
@@ -433,6 +452,9 @@ export class AdminService {
       cook.user.role = UserRole.USER;
       await this.usersRepository.save(cook.user);
     }
+
+    // Bust public chef-listing cache.
+    this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
 
     return { message: `Cook profile deleted, user "${cook.user?.name}" reverted to regular user` };
   }
@@ -562,5 +584,194 @@ export class AdminService {
       order: { created_at: 'DESC' },
       take: limit,
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROUND 3 — BROADCAST PUSH NOTIFICATIONS
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Resolve a target audience to a list of (userId, fcmToken|null, role).
+   * Always uses `is_active = true` so we never push to blocked accounts.
+   */
+  private async resolveBroadcastRecipients(
+    audience: BroadcastAudience,
+    areaSlug?: string,
+  ): Promise<Array<{ id: string; fcm_token: string | null }>> {
+    if (audience === BroadcastAudience.ALL) {
+      return this.usersRepository.find({
+        where: [{ is_active: true, role: UserRole.USER }, { is_active: true, role: UserRole.COOK }],
+        select: { id: true, fcm_token: true } as any,
+      }) as any;
+    }
+    if (audience === BroadcastAudience.CUSTOMERS) {
+      return this.usersRepository.find({
+        where: { is_active: true, role: UserRole.USER },
+        select: { id: true, fcm_token: true } as any,
+      }) as any;
+    }
+    if (audience === BroadcastAudience.COOKS) {
+      return this.usersRepository.find({
+        where: { is_active: true, role: UserRole.COOK },
+        select: { id: true, fcm_token: true } as any,
+      }) as any;
+    }
+    if (audience === BroadcastAudience.AREA) {
+      // Customers in a given area. We don't store area on `users` directly;
+      // we look at their addresses table for the area_slug match. If no
+      // addresses module is exported here we fall back to a raw query.
+      if (!areaSlug) {
+        throw new BadRequestException('area_slug is required for audience=area.');
+      }
+      const rows = await this.usersRepository.query(
+        `SELECT DISTINCT u.id, u.fcm_token
+         FROM users u
+         INNER JOIN addresses a ON a.user_id = u.id
+         WHERE u.is_active = true
+           AND u.role = 'user'
+           AND a.area_slug = $1`,
+        [areaSlug],
+      );
+      return rows;
+    }
+    return [];
+  }
+
+  /** Send a broadcast push + in-app notification to a target audience. */
+  async sendBroadcast(
+    dto: CreateBroadcastDto,
+    admin: User,
+    meta: AuditMeta = { ip: null, userAgent: null },
+  ) {
+    const recipients = await this.resolveBroadcastRecipients(dto.audience, dto.area_slug);
+    const tokens = recipients
+      .map((r) => r.fcm_token)
+      .filter((t): t is string => !!t && t.length > 0);
+
+    // 1) Write a broadcast row first so we have an id to attach to the
+    //    in-app notifications (idempotency_key) and the analytics event.
+    const broadcastRow = this.broadcastsRepository.create({
+      title: dto.title,
+      body: dto.body,
+      audience: dto.audience,
+      area_slug: dto.area_slug ?? null,
+      deep_link: dto.deep_link ?? null,
+      sent_by_admin_id: admin?.id ?? null,
+      sent_by_admin_name: admin?.name ?? null,
+      recipients_targeted: recipients.length,
+      recipients_with_token: tokens.length,
+      fcm_dispatched: false,
+      inapp_created: 0,
+    });
+    const broadcast = await this.broadcastsRepository.save(broadcastRow);
+
+    // 2) Fan out FCM in batches of 500 (FCM legacy v1 cap is 1000 — 500
+    //    leaves headroom and bounds memory). Fire-and-forget per batch.
+    const data: Record<string, string> = {
+      type: 'admin_broadcast',
+      broadcast_id: broadcast.id,
+    };
+    if (dto.deep_link) data.deep_link = dto.deep_link;
+
+    if (tokens.length > 0) {
+      const BATCH = 500;
+      for (let i = 0; i < tokens.length; i += BATCH) {
+        const slice = tokens.slice(i, i + BATCH);
+        // No await — fire concurrently. We've already responded to the
+        // admin with the broadcast row; FCM is best-effort.
+        this.fcmService
+          .sendToMultiple(slice, dto.title, dto.body, data)
+          .catch((err: any) =>
+            this.logger.warn(`FCM batch failed: ${err?.message || err}`),
+          );
+      }
+      broadcastRow.fcm_dispatched = true;
+    }
+
+    // 3) Write an in-app notification per recipient. We use the
+    //    broadcast id as the idempotency_key so accidental double-clicks
+    //    on "Send" don't double-create notifications.
+    let createdCount = 0;
+    const inappBatchSize = 100;
+    for (let i = 0; i < recipients.length; i += inappBatchSize) {
+      const batch = recipients.slice(i, i + inappBatchSize);
+      // Process serially within the batch to avoid hammering the DB
+      // pool, but parallel across batches at the application level if
+      // multiple admins broadcast simultaneously.
+      for (const r of batch) {
+        try {
+          await this.notificationsService.create(
+            r.id,
+            NotificationType.GENERAL,
+            dto.title,
+            dto.body,
+            {
+              broadcast_id: broadcast.id,
+              audience: dto.audience,
+              deep_link: dto.deep_link ?? null,
+            },
+            `broadcast:${broadcast.id}`,
+          );
+          createdCount++;
+        } catch (err: any) {
+          this.logger.warn(
+            `In-app create failed for ${r.id}: ${err?.message || err}`,
+          );
+        }
+      }
+    }
+
+    broadcastRow.inapp_created = createdCount;
+    await this.broadcastsRepository.save(broadcastRow);
+
+    // 4) Analytics + audit log so we can track engagement and ops history.
+    this.analyticsService
+      .track({
+        event_type: 'admin_broadcast_sent',
+        user_id: admin?.id ?? null,
+        user_role: 'admin',
+        metadata: {
+          broadcast_id: broadcast.id,
+          audience: dto.audience,
+          area_slug: dto.area_slug ?? null,
+          targeted: recipients.length,
+          with_token: tokens.length,
+          inapp_created: createdCount,
+        },
+        ip_address: meta.ip,
+        user_agent: meta.userAgent,
+      })
+      .catch(() => undefined);
+
+    await this.audit(
+      admin || null,
+      'notification.broadcast',
+      'broadcast',
+      broadcast.id,
+      {
+        title: dto.title,
+        audience: dto.audience,
+        area_slug: dto.area_slug ?? null,
+        targeted: recipients.length,
+        with_token: tokens.length,
+      },
+      meta,
+    );
+
+    return broadcast;
+  }
+
+  /** List broadcast history for the admin UI. Newest first. */
+  async listBroadcasts(page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
+    const [broadcasts, total] = await this.broadcastsRepository.findAndCount({
+      order: { created_at: 'DESC' },
+      skip,
+      take: limit,
+    });
+    return {
+      broadcasts,
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
+    };
   }
 }

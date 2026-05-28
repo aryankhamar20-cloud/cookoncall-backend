@@ -9,7 +9,10 @@ import { Payment } from '../payments/payment.entity';
 import { Review } from '../reviews/review.entity';
 import { Notification } from '../notifications/notification.entity';
 import { AdminAuditLog } from './admin-audit.entity';
+import { NotificationBroadcast } from './notification-broadcast.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CooksModule } from '../cooks/cooks.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
@@ -21,8 +24,11 @@ import { NotificationsModule } from '../notifications/notifications.module';
       Review,
       Notification,
       AdminAuditLog,
+      NotificationBroadcast,
     ]),
     NotificationsModule,
+    CooksModule,
+    AnalyticsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],
