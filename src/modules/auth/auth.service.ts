@@ -158,15 +158,31 @@ export class AuthService {
     });
 
     if (!user) {
+      // Round 4: respect the role sent from the "Sign up as Chef"
+      // button. Falls back to USER for plain "Sign in with Google".
+      const requestedRole =
+        dto.role === 'cook' ? UserRole.COOK : UserRole.USER;
       user = this.usersRepository.create({
         name: googlePayload.name || 'User',
         email: googlePayload.email.toLowerCase(),
         google_id: googlePayload.sub,
         avatar: googlePayload.picture || null,
-        role: UserRole.USER,
+        role: requestedRole,
         email_verified: true, // Google accounts are pre-verified
       });
       await this.usersRepository.save(user);
+
+      // If signing up as a chef, create the empty Cook profile so the
+      // verification flow has somewhere to land. Mirrors what the
+      // password-based signup does in `register()`.
+      if (user.role === UserRole.COOK) {
+        const cookProfile = this.cooksRepository.create({
+          user_id: user.id,
+          cuisines: [],
+          bio: null,
+        });
+        await this.cooksRepository.save(cookProfile);
+      }
     } else if (!user.google_id) {
       user.google_id = googlePayload.sub;
       if (!user.avatar && googlePayload.picture) {
