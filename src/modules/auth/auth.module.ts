@@ -10,6 +10,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
+import { RedisOtpLimiterService } from '../../common/services/redis-otp-limiter.service';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { Cook } from '../cooks/cook.entity';
   providers: [
     AuthService,
     JwtStrategy,
+    RedisOtpLimiterService,
     // Make JWT guard global — all routes require auth by default
     // Use @Public() decorator to make specific routes public
     {

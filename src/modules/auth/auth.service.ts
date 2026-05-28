@@ -24,55 +24,7 @@ import {
   VerifyEmailOtpDto,
 } from './dto/otp.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
-
-// ─── In-memory OTP rate limiter ──────────────────────────
-// Key: email, Value: { count, windowStart }
-// Max 1 OTP per email per 2 minutes, max 5 per email per day
-interface RateLimitEntry {
-  count: number;
-  windowStart: number; // timestamp ms
-  lastSent: number; // timestamp ms
-}
-
-const otpRateLimits = new Map<string, RateLimitEntry>();
-const OTP_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes between OTPs
-const OTP_DAILY_MAX = 5;
-const OTP_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-function checkOtpRateLimit(email: string): void {
-  const now = Date.now();
-  const key = email.toLowerCase();
-  const entry = otpRateLimits.get(key);
-
-  if (!entry) {
-    otpRateLimits.set(key, { count: 1, windowStart: now, lastSent: now });
-    return;
-  }
-
-  // Reset daily window if expired
-  if (now - entry.windowStart > OTP_DAILY_WINDOW_MS) {
-    otpRateLimits.set(key, { count: 1, windowStart: now, lastSent: now });
-    return;
-  }
-
-  // Check cooldown (2 min between OTPs)
-  if (now - entry.lastSent < OTP_COOLDOWN_MS) {
-    const waitSecs = Math.ceil((OTP_COOLDOWN_MS - (now - entry.lastSent)) / 1000);
-    throw new BadRequestException(
-      `Please wait ${waitSecs} seconds before requesting another OTP.`,
-    );
-  }
-
-  // Check daily limit
-  if (entry.count >= OTP_DAILY_MAX) {
-    throw new BadRequestException(
-      'Too many OTP requests today. Please try again tomorrow.',
-    );
-  }
-
-  entry.count += 1;
-  entry.lastSent = now;
-}
+import { RedisOtpLimiterService } from '../../common/services/redis-otp-limiter.service';
 
 @Injectable()
 export class AuthService {
@@ -86,6 +38,7 @@ export class AuthService {
     private cooksRepository: Repository<Cook>,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private otpLimiter: RedisOtpLimiterService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -247,7 +200,7 @@ export class AuthService {
     }
 
     // Rate limit check
-    checkOtpRateLimit(user.email);
+    await this.otpLimiter.checkAndRecord(user.email);
 
     await this.sendEmailVerificationOtp(user);
 
@@ -383,7 +336,7 @@ export class AuthService {
     }
 
     // Rate limit check
-    checkOtpRateLimit(user.email);
+    await this.otpLimiter.checkAndRecord(user.email);
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.otp = otp;

@@ -30,6 +30,19 @@ export class UsersService {
     return this.findById(userId);
   }
 
+  async updateFcmToken(userId: string, fcmToken: string) {
+    await this.usersRepository.update(userId, { fcm_token: fcmToken });
+    return { message: 'FCM token updated' };
+  }
+
+  async getFcmToken(userId: string): Promise<string | null> {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'fcm_token'],
+    });
+    return user?.fcm_token || null;
+  }
+
   async getUserStats(userId: string) {
     const totalBookings = await this.bookingsRepository.count({
       where: { user_id: userId },

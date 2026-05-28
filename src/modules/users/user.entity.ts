@@ -73,6 +73,10 @@ export class User {
   @Column({ default: true })
   is_active: boolean;
 
+  // FCM push notification token (updated by Flutter app on login/launch)
+  @Column({ nullable: true, type: 'text' })
+  fcm_token: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
