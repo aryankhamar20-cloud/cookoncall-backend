@@ -27,7 +27,7 @@ async function seed() {
   await AppDataSource.initialize();
   console.log('Connected to database');
 
-  const email = 'admin@cookoncall.in';
+  const email = 'admin@thecookoncall.com';
   const password = process.env.ADMIN_PASSWORD || 'Admin@CookOnCall2025';
   const hashedPassword = await bcrypt.hash(password, 12);
 
