@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { seedAdmins } from './seed-admins';
+import { setupSwagger } from './config/swagger.config';
 import helmet from 'helmet';
 import compression from 'compression';
 
@@ -12,7 +13,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Security
-  app.use(helmet());
+  app.use(helmet({
+    // Relax CSP for Swagger UI
+    contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+  }));
   app.use(compression());
 
   // CORS
@@ -32,6 +36,9 @@ async function bootstrap() {
   // Global prefix
   app.setGlobalPrefix('api/v1');
 
+  // Swagger docs (available at /api/v1/docs)
+  setupSwagger(app);
+
   // Global pipes
   app.useGlobalPipes(
     new ValidationPipe({
@@ -49,8 +56,6 @@ async function bootstrap() {
   app.useGlobalInterceptors(new TransformInterceptor());
 
   // ─── Auto-seed admin accounts on startup ───
-  // Idempotent: creates admins only if they don't exist. Safe to run on every
-  // restart. Wrapped in try/catch so a seed failure never crashes the app.
   try {
     const dataSource = app.get(DataSource);
     await seedAdmins(dataSource);
@@ -62,6 +67,11 @@ async function bootstrap() {
 
   const port = process.env.PORT || 4000;
   await app.listen(port);
-  console.log(`🚀 CookOnCall API running on http://localhost:${port}/api/v1`);
+  new Logger('Bootstrap').log(
+    `🚀 CookOnCall API running on http://localhost:${port}/api/v1`,
+  );
+  new Logger('Bootstrap').log(
+    `📚 Swagger docs at http://localhost:${port}/api/v1/docs`,
+  );
 }
 bootstrap();

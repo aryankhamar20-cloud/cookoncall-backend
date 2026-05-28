@@ -7,6 +7,13 @@ import { Repository } from 'typeorm';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
+import { IsString, IsOptional } from 'class-validator';
+
+export class UpdateFcmTokenDto {
+  @IsString()
+  @IsOptional()
+  fcm_token: string;
+}
 
 @Injectable()
 export class UsersService {
@@ -28,6 +35,19 @@ export class UsersService {
   async updateProfile(userId: string, dto: UpdateUserDto) {
     await this.usersRepository.update(userId, dto);
     return this.findById(userId);
+  }
+
+  async updateFcmToken(userId: string, fcmToken: string) {
+    await this.usersRepository.update(userId, { fcm_token: fcmToken });
+    return { message: 'FCM token updated' };
+  }
+
+  async getFcmToken(userId: string): Promise<string | null> {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'fcm_token'],
+    });
+    return user?.fcm_token || null;
   }
 
   async getUserStats(userId: string) {

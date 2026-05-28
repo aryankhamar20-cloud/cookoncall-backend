@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
@@ -22,7 +22,11 @@ import { databaseConfig } from './config/database.config';
 import { redisConfig } from './config/redis.config';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { ErrorsModule } from './modules/errors/errors.module';
-// add SchedulerModule to the imports array
+import { HealthModule } from './modules/health/health.module';
+import { EventsModule } from './modules/events/events.module';
+import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
+import { ReferralsModule } from './modules/referrals/referrals.module';
+import { LoggerMiddleware } from './common/middleware/logger.middleware';
 
 @Module({
   imports: [
@@ -79,15 +83,23 @@ import { ErrorsModule } from './modules/errors/errors.module';
     MealPackagesModule,
     AreasModule,
     ErrorsModule,
+    SchedulerModule,
+    // New P0/P1/P2 modules
+    HealthModule,
+    EventsModule,
+    PromoCodesModule,
+    ReferralsModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints
-    // Individual controllers/routes can use @SkipThrottle() to opt out
-    // or @Throttle({ strict: [...] }) to use stricter limits
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(LoggerMiddleware).forRoutes('*');
+  }
+}
