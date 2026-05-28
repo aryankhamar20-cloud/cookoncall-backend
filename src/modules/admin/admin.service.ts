@@ -794,4 +794,73 @@ export class AdminService {
       pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
     };
   }
+
+  /**
+   * Round 4 / Analytics Phase 2 — click-through-rate for one broadcast.
+   *
+   * `inapp_created` rows are persisted on the broadcast row at send
+   * time; `clicked_at` lives on each notification. We count rows that
+   * have BOTH `idempotency_key='broadcast:<id>'` AND `clicked_at IS
+   * NOT NULL` so we get an exact CTR even if the metadata column is
+   * missing for legacy rows.
+   */
+  async broadcastCtr(broadcastId: string) {
+    const broadcast = await this.broadcastsRepository.findOne({
+      where: { id: broadcastId },
+    });
+    if (!broadcast) {
+      throw new NotFoundException('Broadcast not found');
+    }
+
+    const idemKey = `broadcast:${broadcastId}`;
+    const counts = await this.notificationsRepository.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE idempotency_key = $1)::int AS created,
+         COUNT(*) FILTER (WHERE idempotency_key = $1 AND clicked_at IS NOT NULL)::int AS clicked,
+         COUNT(*) FILTER (WHERE idempotency_key = $1 AND is_read = true)::int AS read
+       FROM notifications`,
+      [idemKey],
+    );
+
+    // Pull the first 100 clickers for the audience cohort drill-down.
+    // Limited to 100 to keep the payload small — the UI shows a
+    // collapsed list with "view all" linking to the audit log.
+    const clickers = await this.notificationsRepository.query(
+      `SELECT n.user_id, u.name, u.email, u.role,
+              n.clicked_at
+       FROM notifications n
+       LEFT JOIN users u ON u.id = n.user_id
+       WHERE n.idempotency_key = $1
+         AND n.clicked_at IS NOT NULL
+       ORDER BY n.clicked_at DESC
+       LIMIT 100`,
+      [idemKey],
+    );
+
+    const created = Number(counts[0]?.created ?? 0);
+    const clicked = Number(counts[0]?.clicked ?? 0);
+    const read = Number(counts[0]?.read ?? 0);
+    const ctr = created > 0 ? +((clicked / created) * 100).toFixed(2) : 0;
+    const readRate = created > 0 ? +((read / created) * 100).toFixed(2) : 0;
+
+    return {
+      broadcast: {
+        id: broadcast.id,
+        title: broadcast.title,
+        audience: broadcast.audience,
+        created_at: broadcast.created_at,
+        recipients_targeted: broadcast.recipients_targeted,
+        recipients_with_token: broadcast.recipients_with_token,
+        inapp_created: broadcast.inapp_created,
+      },
+      stats: {
+        created,
+        clicked,
+        read,
+        ctr_percent: ctr,
+        read_rate_percent: readRate,
+      },
+      clickers,
+    };
+  }
 }

@@ -59,6 +59,16 @@ export class Notification {
   is_read: boolean;
 
   /**
+   * Round 4 — set when the user actually opens / taps the
+   * notification. We use this for click-through-rate analytics on
+   * admin broadcasts (CTR = clicked / created). Distinct from
+   * `is_read` because a user can mark all as read in bulk without
+   * actually opening any of them.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  clicked_at: Date | null;
+
+  /**
    * Optional dedup key. When set, two inserts with the same
    * (user_id, idempotency_key) are guaranteed to produce one row —
    * any retry of the upstream emitter (Bull retry, webhook re-delivery,
