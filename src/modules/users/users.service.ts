@@ -7,13 +7,6 @@ import { Repository } from 'typeorm';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
-import { IsString, IsOptional } from 'class-validator';
-
-export class UpdateFcmTokenDto {
-  @IsString()
-  @IsOptional()
-  fcm_token: string;
-}
 
 @Injectable()
 export class UsersService {

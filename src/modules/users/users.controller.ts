@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
-import { UsersService, UpdateFcmTokenDto } from './users.service';
+import { UsersService } from './users.service';
+import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
