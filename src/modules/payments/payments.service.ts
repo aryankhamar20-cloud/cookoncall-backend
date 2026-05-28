@@ -236,21 +236,52 @@ export class PaymentsService {
   }
 
   // ─── RAZORPAY WEBHOOK ─────────────────────────────────
-  async handleWebhook(body: any, signature: string) {
+  /**
+   * Verify and dispatch a Razorpay webhook.
+   *
+   * Security posture (Round 2 hardening):
+   *   1. Fail fast if RAZORPAY_WEBHOOK_SECRET env is unset — without it
+   *      every webhook would otherwise be implicitly trusted.
+   *   2. Fail fast if the signature header is missing.
+   *   3. HMAC over the RAW request bytes (Buffer), not JSON.stringify of
+   *      the parsed body — the parsed-then-stringified version often
+   *      doesn't match what Razorpay signed (whitespace, key order,
+   *      escaped Unicode).
+   *   4. Constant-time comparison via crypto.timingSafeEqual to neuter
+   *      length-leak / timing attacks.
+   */
+  async handleWebhook(rawBody: Buffer | undefined, body: any, signature: string) {
     const secret = this.configService.get<string>('RAZORPAY_WEBHOOK_SECRET');
+    if (!secret) {
+      this.logger.error('RAZORPAY_WEBHOOK_SECRET is not configured');
+      throw new BadRequestException('Webhook is not configured');
+    }
+    if (!signature) {
+      throw new BadRequestException('Missing webhook signature');
+    }
+    if (!rawBody || rawBody.length === 0) {
+      throw new BadRequestException('Empty webhook body');
+    }
 
-    const expectedSignature = crypto
+    const expectedHex = crypto
       .createHmac('sha256', secret)
-      .update(JSON.stringify(body))
+      .update(rawBody)
       .digest('hex');
 
-    if (expectedSignature !== signature) {
+    // Both sides must be the same length before timingSafeEqual,
+    // otherwise it throws (which is itself a timing leak). Pad to the
+    // larger length so a length mismatch returns false in constant time.
+    const a = Buffer.from(expectedHex, 'utf8');
+    const b = Buffer.from(signature || '', 'utf8');
+    const lengthsMatch = a.length === b.length;
+    const bytesMatch = lengthsMatch && crypto.timingSafeEqual(a, b);
+    if (!bytesMatch) {
       this.logger.warn('Invalid webhook signature');
       throw new BadRequestException('Invalid webhook signature');
     }
 
-    const event = body.event;
-    const payload = body.payload;
+    const event = body?.event;
+    const payload = body?.payload;
 
     this.logger.log(`Razorpay webhook: ${event}`);
 

@@ -1,15 +1,22 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
+  Header,
+  HttpStatus,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { BookingsService } from './bookings.service';
+import { ReceiptService } from './receipt.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../users/user.entity';
 import {
@@ -19,10 +26,14 @@ import {
   RejectBookingDto,
   RebookDto,
 } from './dto/booking.dto';
+import { BookingStatus } from './booking.entity';
 
 @Controller('bookings')
 export class BookingsController {
-  constructor(private readonly bookingsService: BookingsService) {}
+  constructor(
+    private readonly bookingsService: BookingsService,
+    private readonly receiptService: ReceiptService,
+  ) {}
 
   @Post()
   async createBooking(
@@ -161,6 +172,56 @@ export class BookingsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.bookingsService.getCustomerPhoneForCook(id, user.id);
+  }
+
+  // ─── PDF RECEIPT (Round 2 — H4) ───────────────────────
+  /**
+   * Streams a PDF receipt for a paid booking.
+   *
+   * Authorization: caller must be the booking's customer OR the
+   * assigned cook OR an admin. Pre-payment states (pending_chef_approval,
+   * awaiting_payment, cancelled before payment) return 403 — there's
+   * nothing meaningful to receipt yet.
+   *
+   * Bypasses the global TransformInterceptor by returning the response
+   * directly via @Res() so the binary PDF reaches the client unwrapped.
+   */
+  @Get(':id/receipt')
+  @Header('Content-Type', 'application/pdf')
+  async getReceipt(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ) {
+    const booking = await this.bookingsService.findById(id);
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    const cook = booking.cook;
+    const isOwner =
+      booking.user_id === user.id ||
+      cook?.user_id === user.id ||
+      user.role === 'admin';
+    if (!isOwner) {
+      throw new ForbiddenException('Not authorised to download this receipt');
+    }
+
+    const eligible: BookingStatus[] = [
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+      BookingStatus.COMPLETED,
+      BookingStatus.PENDING, // legacy
+    ];
+    if (!eligible.includes(booking.status)) {
+      throw new ForbiddenException(
+        'Receipts are available only after the booking is paid / confirmed',
+      );
+    }
+
+    const buf = await this.receiptService.generate(booking);
+    const fileName = `cookoncall-receipt-${booking.id.slice(0, 8)}.pdf`;
+    res.set('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.set('Content-Length', String(buf.length));
+    res.status(HttpStatus.OK).send(buf);
   }
 
   // ─── CANCELLATION REFUND ESTIMATE ──────────────────────

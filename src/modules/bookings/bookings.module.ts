@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { BookingsService } from './bookings.service';
 import { BookingsController } from './bookings.controller';
+import { ReceiptService } from './receipt.service';
 import { Booking } from './booking.entity';
 import { Cook } from '../cooks/cook.entity';
 import { User } from '../users/user.entity';
@@ -38,7 +39,7 @@ import { PackageAddon } from '../meal-packages/package-addon.entity';
     AvailabilityModule,
   ],
   controllers: [BookingsController],
-  providers: [BookingsService],
+  providers: [BookingsService, ReceiptService],
   exports: [BookingsService],
 })
 export class BookingsModule {}

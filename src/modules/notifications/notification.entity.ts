@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { User } from '../users/user.entity';
 
@@ -56,6 +57,18 @@ export class Notification {
 
   @Column({ default: false })
   is_read: boolean;
+
+  /**
+   * Optional dedup key. When set, two inserts with the same
+   * (user_id, idempotency_key) are guaranteed to produce one row —
+   * any retry of the upstream emitter (Bull retry, webhook re-delivery,
+   * cron re-run) becomes a safe no-op.
+   *
+   * Format suggestion: `<event>:<entity_id>` e.g. `booking_paid:abc-123`.
+   */
+  @Index('idx_notifications_user_idem')
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  idempotency_key: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

@@ -8,7 +8,10 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  RawBodyRequest,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { PaymentsService } from './payments.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -45,14 +48,19 @@ export class PaymentsController {
     return this.paymentsService.getPaymentByBooking(bookingId);
   }
 
-  // Razorpay webhook — must be public (no JWT)
+  // Razorpay webhook — must be public (no JWT).
+  // We read the RAW request body here (req.rawBody, enabled via
+  // NestFactory rawBody:true) because Razorpay computes the signature
+  // over the exact bytes they sent. JSON.stringify(parsedBody) does
+  // not reproduce those bytes (key order, whitespace, escaped chars).
   @Public()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
+    @Req() req: RawBodyRequest<Request>,
     @Body() body: any,
     @Headers('x-razorpay-signature') signature: string,
   ) {
-    return this.paymentsService.handleWebhook(body, signature);
+    return this.paymentsService.handleWebhook(req.rawBody, body, signature);
   }
 }

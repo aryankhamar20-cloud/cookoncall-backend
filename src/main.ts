@@ -14,7 +14,7 @@ async function bootstrap() {
   // ─── Sentry MUST init before NestFactory so it captures bootstrap errors ───
   initSentry();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Security
   app.use(helmet({
