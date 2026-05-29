@@ -128,7 +128,7 @@ export class AnalyticsDigestService {
       this.analytics.overview({ from: yesterdayUtc.toISOString(), to: todayUtc.toISOString() }),
       this.analytics
         .overview({ from: beforeYesterdayUtc.toISOString(), to: yesterdayUtc.toISOString() })
-        .catch(() => null), // tolerate first-day-of-app no-data
+        .catch((): null => null), // tolerate first-day-of-app no-data
     ]);
 
     // Day-over-day deltas for the email's "is this better or worse?"

@@ -140,7 +140,7 @@ export class CooksService {
     const saved = await this.cooksRepository.save(cook);
     // Round 3 — public chef listings & detail/menu must reflect the
     // change immediately; bust caches now (fire-and-forget).
-    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    this.invalidateCacheOnWrite(cook.id).catch((): void => undefined);
     return saved;
   }
 
@@ -211,7 +211,7 @@ export class CooksService {
     await this.cooksRepository.save(cook);
     // Going online/offline changes whether the chef is in the public
     // listing — invalidate caches.
-    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    this.invalidateCacheOnWrite(cook.id).catch((): void => undefined);
     return { is_available: cook.is_available };
   }
 
@@ -341,7 +341,7 @@ export class CooksService {
     });
 
     const saved = await this.menuRepository.save(item);
-    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    this.invalidateCacheOnWrite(cook.id).catch((): void => undefined);
     return saved;
   }
 
@@ -362,7 +362,7 @@ export class CooksService {
 
     Object.assign(item, dto);
     const saved = await this.menuRepository.save(item);
-    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    this.invalidateCacheOnWrite(cook.id).catch((): void => undefined);
     return saved;
   }
 
@@ -378,7 +378,7 @@ export class CooksService {
     }
 
     await this.menuRepository.remove(item);
-    this.invalidateCacheOnWrite(cook.id).catch(() => undefined);
+    this.invalidateCacheOnWrite(cook.id).catch((): void => undefined);
     return { message: 'Menu item deleted' };
   }
 

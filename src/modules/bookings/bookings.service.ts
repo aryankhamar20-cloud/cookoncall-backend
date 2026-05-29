@@ -741,7 +741,7 @@ export class BookingsService {
         booking.status = BookingStatus.EXPIRED;
         booking.cancelled_at = new Date();
         await this.bookingsRepository.save(booking);
-        this.fireExpiryNotifications(booking).catch(() => undefined);
+        this.fireExpiryNotifications(booking).catch((): void => undefined);
       }
       return booking;
     }
@@ -756,7 +756,7 @@ export class BookingsService {
         booking.status = BookingStatus.EXPIRED;
         booking.cancelled_at = new Date();
         await this.bookingsRepository.save(booking);
-        this.fireExpiryNotifications(booking).catch(() => undefined);
+        this.fireExpiryNotifications(booking).catch((): void => undefined);
       }
     }
 

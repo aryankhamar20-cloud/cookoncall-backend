@@ -46,9 +46,9 @@ export class AnalyticsPdfService {
     // Failure of any single query is non-fatal: we render an "n/a"
     // for that section rather than blowing up the whole PDF.
     const [overview, chefs, locations] = await Promise.all([
-      this.analytics.overview(dto).catch(() => null),
-      this.analytics.chefs(dto).catch(() => null),
-      this.analytics.locations(dto).catch(() => null),
+      this.analytics.overview(dto).catch((): null => null),
+      this.analytics.chefs(dto).catch((): null => null),
+      this.analytics.locations(dto).catch((): null => null),
     ]);
 
     return new Promise<Buffer>((resolve) => {

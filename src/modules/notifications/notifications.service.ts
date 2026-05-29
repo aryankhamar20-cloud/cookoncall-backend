@@ -206,7 +206,7 @@ export class NotificationsService {
             broadcast_id: broadcastId,
           },
         })
-        .catch(() => undefined);
+        .catch((): void => undefined);
     }
 
     return {
@@ -329,7 +329,7 @@ export class NotificationsService {
         </p>`,
       );
       if (await this._channelAllowed(customerUserId, 'email')) {
-        this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+        this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
       }
     }
   }
@@ -376,7 +376,7 @@ export class NotificationsService {
         </p>`,
       );
       if (await this._channelAllowed(customerUserId, 'email')) {
-        this.sendDirectEmail(customerEmail, title, html).catch(() => undefined);
+        this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
       }
     }
   }
@@ -407,7 +407,7 @@ export class NotificationsService {
     if (recipientEmail) {
       const html = this.wrapBrandedHtml('Booking expired', `<p style="color:#5D4E37;">${message}</p>`);
       if (await this._channelAllowed(recipientUserId, 'email')) {
-        this.sendDirectEmail(recipientEmail, title, html).catch(() => undefined);
+        this.sendDirectEmail(recipientEmail, title, html).catch((): void => undefined);
       }
     }
   }
