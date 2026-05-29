@@ -399,6 +399,13 @@ export class BookingsService {
         cook.user_id,
         saved.id,
         customer?.name || 'A customer',
+        {
+          cookEmail: cook.user?.email || null,
+          chefName: cook.user?.name || 'Chef',
+          scheduledAt: scheduledDate,
+          address: dto.address,
+          totalPrice,
+        },
       )
       .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
 
@@ -554,7 +561,19 @@ export class BookingsService {
     });
 
     this.notificationsService
-      .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
+      .notifyBookingCreated(
+        userId,
+        cook.user_id,
+        saved.id,
+        customer?.name || 'A customer',
+        {
+          cookEmail: cook.user?.email || null,
+          chefName: cook.user?.name || 'Chef',
+          scheduledAt: scheduledDate,
+          address: dto.address,
+          totalPrice,
+        },
+      )
       .catch((err) => this.logger.warn(`Notification failed: ${err.message}`));
 
     if (customer?.email) {
