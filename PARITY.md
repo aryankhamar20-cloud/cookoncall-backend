@@ -1,127 +1,97 @@
 # CookOnCall Cross-Platform Parity Matrix
 
-Generated 2026-05-29 from the merged `main` of all three repos:
+Generated 2026-05-29. Updated 2026-05-29 with corrections after closer audit.
 
 - `cookoncall-backend` — NestJS, source of truth for the API contract.
 - `cookoncall` — Next.js web app (customer + cook + admin).
 - `cookoncall-flutter` — Flutter mobile (customer + cook only; admin is web-only by design).
 
 Method: read every backend controller, every web `api.ts` export const, and every
-Flutter file calling `dioProvider` to enumerate actual route consumption. This is
-not a feature wish list — every check mark is a real call site.
+Flutter file calling `dioProvider` to enumerate actual route consumption. Every
+check mark is a real call site.
+
+> **Corrections from the first version of this doc:** Three claimed "Flutter
+> parity gaps" (G1 phone OTP, G3 promo-code, G5 referral apply) were wrong —
+> those features are missing on **both** web and Flutter, so they're feature
+> gaps, not parity gaps. They've been moved to a "neither client uses this"
+> table below. The two genuine parity gaps (G2 chef received reviews, G4 chef
+> payouts) are still listed and have been shipped — see PRs at the bottom.
 
 Status legend:
 
-- ✅ Fully covered — calls the route and exercises the feature.
-- 🟡 Partially covered — some sub-features wired, others missing.
-- ❌ Not covered — no call site found.
+- ✅ Fully covered.
+- 🟡 Partially covered.
+- ❌ Not covered.
 - 🔒 Intentionally out of scope (e.g. admin features on Flutter).
+- 🚫 Backend exposes it but **no client uses it** (orphaned endpoint).
 
 ---
 
-## Summary
+## Summary — verified state
 
 | Category | Backend | Web | Flutter | Notes |
 |---|---|---|---|---|
-| Authentication (email + Google) | ✅ | ✅ | ✅ | Refresh token bug fixed in PR #18 |
-| Authentication (phone OTP) | ✅ | ✅ | ❌ | **Gap: Flutter doesn't expose phone OTP login** |
+| Authentication (email + Google) | ✅ | ✅ | ✅ | Refresh-token bug fixed in PR #18 (flutter) |
+| Authentication (email OTP) | ✅ | ✅ | ✅ | |
+| Authentication (phone OTP) | ✅ | 🚫 | 🚫 | **Backend has it; neither client uses it.** Originally listed as a Flutter gap — wrong, web doesn't use it either. |
 | Authorization (RBAC) | ✅ | ✅ | ✅ | Backend hardened in PRs #15, #16, #17, #20 |
 | OTP — booking start/end | ✅ | ✅ | ✅ | Both clients drive the cooking-session OTP flow |
 | Bookings — full lifecycle | ✅ | ✅ | ✅ | Includes accept/reject/rebook/refund-estimate |
-| Payments — Razorpay | ✅ | ✅ | ✅ | Webhook is server-only |
-| Reviews | ✅ | ✅ | 🟡 | **Flutter posts reviews but doesn't show chef-side received reviews** |
+| Payments — Razorpay | ✅ | ✅ | ✅ | Webhook is server-only; HMAC verify locked in by tests #18, #22 |
+| Reviews — submit | ✅ | ✅ | ✅ | |
+| Reviews — chef-side received list | ✅ | ✅ | ✅ | Flutter wired by **PR #20** (was hitting wrong endpoint) |
 | Notifications — list + mark | ✅ | ✅ | ✅ | |
 | Notifications — settings | ✅ | ✅ | ✅ | Push/email/SMS toggles |
-| Notifications — broadcast (admin) | ✅ | ✅ | 🔒 | Admin-only; intentionally web-only |
+| Notifications — broadcast (admin) | ✅ | ✅ | 🔒 | Admin-only |
 | Analytics | ✅ | ✅ | 🔒 | Admin-only |
 | Admin features | ✅ | ✅ | 🔒 | `admin_home_screen.dart` is an explicit "use web" stub |
-| Chef features — profile/menu/availability | ✅ | ✅ | ✅ | |
-| Chef features — meal packages | ✅ | ✅ | ✅ | |
-| Chef features — verification (KYC docs) | ✅ | ✅ | ✅ | |
-| Chef features — service area | ✅ | ✅ | 🟡 | **Flutter has the screen but no API call for areas list** |
-| Chef features — broadcast/CTR | ✅ | ✅ | 🔒 | Admin |
-| Customer features — search/book/profile | ✅ | ✅ | ✅ | |
-| Customer features — addresses CRUD | ✅ | ✅ | ✅ | |
-| Customer features — areas list | ✅ | ✅ | ✅ | |
-| Customer features — promo code (apply/validate) | ✅ | ✅ | ❌ | **Gap: no Flutter promo-code flow** |
-| Referral system | ✅ | ✅ | 🟡 | **Flutter has /my-code but no /apply** |
-| Earnings | ✅ | ✅ | ✅ | |
-| Payouts (chef) | ✅ | ✅ | ❌ | **Gap: Flutter doesn't show payout history** |
+| Chef — profile/menu/availability | ✅ | ✅ | ✅ | |
+| Chef — meal packages | ✅ | ✅ | ✅ | |
+| Chef — verification (KYC docs) | ✅ | ✅ | ✅ | |
+| Chef — service area config | ✅ | ✅ | 🟡 | Flutter has the screen but doesn't call `/areas` or `/cooks/me` for fee config |
+| Customer — search/book/profile | ✅ | ✅ | ✅ | |
+| Customer — addresses CRUD | ✅ | ✅ | ✅ | |
+| Customer — areas list | ✅ | ✅ | ✅ | |
+| Customer — promo-code redeem | ✅ | 🚫 | 🚫 | **Backend has it; neither client uses it.** Originally listed as a Flutter gap — wrong. The booking DTO doesn't even accept a promo code yet. This is a feature that needs full-stack work, not a parity fix. |
+| Referral system — share my code | ✅ | 🚫 | ✅ | Flutter calls `/referrals/my-code`; web does **not** consume any referral endpoint |
+| Referral system — apply someone else's | ✅ | 🚫 | 🚫 | Originally claimed as a "Flutter referral half-implemented" gap; in fact web has nothing referral-related either |
+| Earnings — totals | ✅ | ✅ | ✅ | |
+| Payouts — chef per-booking history | ✅ | ✅ | ✅ | Flutter wired by **PR #19** (was missing entirely) |
 | Page-view tracking (Phase 3) | ✅ | ✅ | ❌ | Optional — only relevant if mobile funnel analytics is wanted |
-| Error reporting (Sentry frontend log forwarding) | ✅ | ✅ | ✅ | |
-| Pincode lookup (India Post helper) | n/a | ✅ | ❌ | Web has a tiny `lookupPincode()` helper; Flutter doesn't (likely fine for now) |
+| Error reporting (Sentry) | ✅ | ✅ | ✅ | |
+| Pincode lookup helper | n/a | ✅ | ❌ | Web has a tiny `lookupPincode()` helper; Flutter doesn't (likely fine) |
 
 ---
 
-## Detailed gaps (actionable — each is its own follow-up issue)
+## Real Flutter parity gaps
 
-### G1 — Flutter is missing phone-OTP login
+### G2 — Chef received-reviews screen ✅ SHIPPED
 
-**Backend routes:** `POST /auth/send-otp`, `POST /auth/verify-otp` (both `@Public`).
-**Web:** wired (`authApi.sendOtp`, `authApi.verifyOtp`).
-**Flutter:** has email-OTP and Google sign-in flows, but no phone-OTP. The `otp_screen.dart` is wired only for email verification, not phone login.
+**Status:** Fixed in **[PR #20](https://github.com/aryankhamar20-cloud/cookoncall-flutter/pull/20)**.
 
-**Why this matters:** SMS-OTP is the dominant Indian login flow. Most CookOnCall customers will land on Flutter. Forcing them through email-OTP / Google adds friction that competitors don't.
+The Flutter `cook_reviews_screen.dart` was hitting `GET /reviews/me` (the customer-side "reviews I've written" endpoint, almost always empty for chefs) instead of `GET /reviews/cook/me/received` (the chef-side "reviews customers have left for me" endpoint that web uses). Pure URL fix; the existing parsing already matched the chef-side response shape. `api_constants.dart` even declared `cookReviewsReceived` — it was just never called.
 
-**Effort:** ~1 day. Add phone-entry screen, plumb to `auth_repository.sendOtp/verifyOtp`, integrate into existing OTP UI (`otp_screen.dart` is already shaped for this).
+### G4 — Chef payout history ✅ SHIPPED
 
-### G2 — Flutter doesn't show chef-side received reviews
+**Status:** Implemented in **[PR #19](https://github.com/aryankhamar20-cloud/cookoncall-flutter/pull/19)**.
 
-**Backend:** `GET /reviews/cook/me/received` (paginated, with aggregate stats — rating histogram, avg, total).
-**Web:** wired (`cooksApi.getMyReviewsReceived`) — used in cook dashboard "My Reviews" panel.
-**Flutter:** the screen `cook_reviews_screen.dart` exists but doesn't call the API.
+Adds `CookPayout`/`CookPayoutsSummary`/`CookPayoutsPage` models, a paginated `getPayouts(page, limit, statusFilter)` repo method, a new `cook_payouts_screen.dart` showing summary cards + per-booking breakdown + load-more pagination, and a "View detailed payout history" link on the existing Earnings tab.
 
-**Why this matters:** chefs need to see their reviews on the platform they actually use. If they're on mobile-only (likely for many chefs), they're flying blind.
+### G6 — Chef service-area config 🟡 STILL OPEN
 
-**Effort:** ~half day. The endpoint already returns everything needed; just wire it.
+The Flutter `cook_service_area_screen.dart` exists (286 lines of UI) but doesn't call `/areas` or the chef-area-fees update endpoint. Chefs on Flutter can't configure where they serve. Effort: ~half day to 1 day. Not yet shipped.
 
-### G3 — Flutter has no promo-code flow
+---
 
-**Backend:** `POST /promo-codes/validate` (any authenticated user) for the customer pre-checkout flow. `referrals/apply` for first-booking referral discount.
-**Web:** wired in `BookingModal.tsx` (customer enters a code, validate fires, discount applied).
-**Flutter:** no validate call anywhere. Customers on mobile cannot use a promo code.
+## Items I originally listed as Flutter gaps but are actually backend-feature-not-fully-wired-anywhere
 
-**Why this matters:** Direct revenue feature. Marketing campaigns that hand out codes only reach web users.
+| ID | Item | Verified state | What's actually needed |
+|---|---|---|---|
+| ~~G1~~ | Phone-OTP login | Backend has `POST /auth/send-otp` + `verify-otp` (`@Public`), but **neither web nor Flutter consumes them**. Web only uses email OTP. | Pick a client (or both), wire the SMS-OTP UX. Not a parity-closing PR. |
+| ~~G3~~ | Customer promo-code redeem | Backend has `POST /promo-codes/validate` (any auth user), but `CreateBookingDto` has **zero promo fields** and `bookings.service.createBooking` never references promos. **No client uses validate either.** Web's `BookingModal.tsx` has zero promo references. | Full-stack feature: extend `CreateBookingDto`, plumb discount through bookings.service, **then** wire either client. |
+| ~~G5~~ | Referral `/apply` | Backend has it. Flutter calls `/referrals/my-code` but not `/apply`. **Web has zero referral consumers** — no my-code, no apply. So Flutter is actually *ahead* of web on referrals. | Decide product intent (web parity, or just Flutter loop completion), then wire. |
 
-**Effort:** ~half day. Add a "have a promo code?" field in the booking sheet, call validate, surface the discount. Pattern exists on web (`PromoCode` validation block).
-
-### G4 — Flutter doesn't show chef payout history
-
-**Backend:** `GET /cooks/me/payouts` (paginated; per-booking gross/commission/net + lifetime totals).
-**Web:** wired (`cooksApi.getMyPayouts`) — used in `EarningsHistoryPanel.tsx`.
-**Flutter:** earnings summary is shown (`/cooks/me/earnings`), but the per-booking payout breakdown isn't.
-
-**Why this matters:** chefs question payouts. Without itemized history they have to trust a number. Easy to drive support tickets.
-
-**Effort:** ~half day. Extend the chef earnings screen with a paginated list section.
-
-### G5 — Flutter referral flow is half-implemented
-
-**Backend:** `GET /referrals/my-code` + `POST /referrals/apply`.
-**Web:** wired both.
-**Flutter:** `referral_screen.dart` calls `/referrals/my-code` (so the user can see their own code) but `/apply` is never called — there's no UI surface for entering someone else's code.
-
-**Why this matters:** Half a referral system. Existing users have a code to share; new users have no way to redeem one. The acquisition loop is broken on mobile.
-
-**Effort:** ~half day. Add a "had a friend invite you?" prompt during onboarding or first booking. Call `/referrals/apply` once.
-
-### G6 — Flutter chef service-area screen is UI-only
-
-**Backend:** `GET /areas` (list active areas) and area-specific fee config on the chef profile.
-**Web:** wired.
-**Flutter:** `cook_service_area_screen.dart` exists (286 lines of UI) but doesn't call `/areas` or the chef-area-fees update endpoint.
-
-**Why this matters:** Chefs on Flutter cannot configure where they serve. They appear with default settings forever.
-
-**Effort:** ~half day to 1 day depending on whether the screen needs UI changes.
-
-### G7 — Page-view tracking on Flutter
-
-**Backend:** `POST /events` (public, accepts anonymous events).
-**Web:** wired (`PageViewTracker.tsx` fires on every route change).
-**Flutter:** no event tracking. So all funnel analytics in the admin dashboard are web-only.
-
-**Effort:** ~quarter day. Add a Flutter route observer that fires `eventsApi.track` on screen changes. Optional — only worth it if the team intends to compare web vs mobile funnel.
+These are real feature gaps but they need to be discussed as **product features**, not classified as "Flutter falling behind web."
 
 ---
 
@@ -129,55 +99,49 @@ Status legend:
 
 These are intentional and don't need Flutter implementations:
 
-- **All `/admin/*` routes** — Flutter `admin_home_screen.dart` literally says "Admin panel is web-only. This screen is a redirect stub for mobile admins."
-- **Analytics CSV / PDF export** — admin-only, web-only.
-- **Audit log** — admin-only.
-- **Broadcast push composer** — admin-only.
-- **Promo-code management UI** — admin-only.
-- **Area approval workflow** — admin-only.
+- All `/admin/*` routes — `admin_home_screen.dart` literally says "Admin panel is web-only."
+- Analytics CSV / PDF export, audit log, broadcast push composer, promo-code management UI, area approval workflow.
 
 ---
 
 ## Backend routes with no client consumer (orphaned)
 
-Routes the backend exposes that nobody currently calls. These aren't bugs but are worth noting — they're either retired, never-shipped, or only invoked server-side:
-
 | Route | Notes |
 |---|---|
 | `POST /payments/webhook` | Razorpay-side; not called by clients (correct) |
-| `GET /payments/booking/:bookingId` | Not used by web or Flutter; service tooling? |
-| `POST /errors` (frontend log forward) | Web has `lib/sentry.ts` but only forwards to Sentry directly, not to this endpoint |
-| `GET /errors` (admin-only error log list) | Backend has it; no admin panel surfaces it yet |
-| `GET /availability/me` | Cook reads schedule — wired in cook detail screen on Flutter, but the controller path is shared |
-| `GET /admin/recent-users` / `recent-bookings` | Web admin dashboard uses these |
+| `GET /payments/booking/:bookingId` | Not used by web or Flutter |
+| `POST /errors` | Frontend log forward — neither client routes errors here |
+| `GET /errors` | Admin-only error log list — no admin panel surface yet |
+| `POST /auth/send-otp` / `verify-otp` | Phone-OTP, see ~~G1~~ above |
+| `POST /promo-codes/validate` | Customer promo redeem, see ~~G3~~ above |
+| `POST /referrals/apply` | Referral redeem, see ~~G5~~ above |
 
 ---
 
-## Recommended sprint plan
+## What's left after PRs #19, #20
 
-If we want to close the Flutter parity gaps, ordered by ROI:
+Real Flutter parity gaps remaining:
 
-| # | Gap | Effort | Why first |
-|---|---|---|---|
-| 1 | G3 — Flutter promo-code validate | 0.5d | Direct revenue, marketing campaigns blocked otherwise |
-| 2 | G1 — Flutter phone-OTP login | 1d | Removes friction on the dominant Indian login path |
-| 3 | G2 — Flutter chef received reviews | 0.5d | Chef trust / support deflection |
-| 4 | G4 — Flutter chef payout history | 0.5d | Chef trust / support deflection |
-| 5 | G5 — Flutter referral apply | 0.5d | Closes the acquisition loop |
-| 6 | G6 — Flutter chef service-area config | 1d | Enables more chef self-service, less admin work |
-| 7 | G7 — Flutter event tracking | 0.25d | Optional — only if mobile funnel analytics is needed |
+| # | Gap | Effort |
+|---|---|---|
+| G6 | Flutter chef service-area config (UI exists, no API calls) | ~0.5–1 day |
+| G7 | Flutter page-view tracking (optional) | ~0.25 day |
 
-Total: ~4.25 days of focused work to reach full Flutter feature parity for everything that should be there.
+Backend-feature-not-fully-wired (not parity gaps):
+
+| Item | Effort | Notes |
+|---|---|---|
+| Phone-OTP wiring (web + Flutter) | ~1 day each | If India SMS-OTP is desired flow |
+| Promo-code customer flow (full-stack) | ~2 days | Backend booking integration + both clients |
+| Referral apply flow (web + Flutter) | ~0.5–1 day | Web has nothing today; Flutter has half |
 
 ---
 
 ## How to keep this matrix honest
-
-Two automated guards I recommend (not in this PR):
 
 1. **CI step that diffs `endpoints.json`** — generate from the backend at build time, fail PR if a new route lands without a comment indicating intended web/Flutter coverage.
 2. **Endpoint-coverage report** — extend the Jest suite to print all `controller @Get/@Post` decorators, then cross-reference against a static list of known web/Flutter call sites. Surface drift in the PR check.
 
 ---
 
-_Generated by audit; verified manually file-by-file. Last updated: 2026-05-29._
+_Last updated: 2026-05-29 (post-corrections)._
