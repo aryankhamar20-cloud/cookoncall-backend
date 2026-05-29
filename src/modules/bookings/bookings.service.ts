@@ -773,6 +773,16 @@ export class BookingsService {
         booking.user?.email || null,
         bookingId,
         booking.cook?.user?.name || 'Your chef',
+        // WhatsApp Phase 4 — customer + chef each get a confirmation
+        // template. Channel-gating + phone-presence checks live in
+        // notifyChefAccepted; we just pass the data.
+        {
+          customerName: booking.user?.name || 'Customer',
+          customerPhone: booking.user?.phone || null,
+          chefUserId: userId,
+          chefPhone: booking.cook?.user?.phone || null,
+          scheduledAt: booking.scheduled_at,
+        },
       )
       .catch((err) => this.logger.warn(`Accept notification failed: ${err.message}`));
 
@@ -811,6 +821,12 @@ export class BookingsService {
         booking.user?.email || null,
         bookingId,
         booking.cook?.user?.name || 'The chef',
+        // WhatsApp Phase 4 — customer-side WhatsApp rejection notice.
+        // Reason stays admin-only in bookings.rejection_reason.
+        {
+          customerName: booking.user?.name || 'Customer',
+          customerPhone: booking.user?.phone || null,
+        },
       )
       .catch((err) => this.logger.warn(`Reject notification failed: ${err.message}`));
 
