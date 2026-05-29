@@ -27,6 +27,7 @@ import { EventsModule } from './modules/events/events.module';
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
 import { CommonModule } from './common/common.module';
 
@@ -97,6 +98,10 @@ import { CommonModule } from './common/common.module';
     ReferralsModule,
     // Analytics Phase 1
     AnalyticsModule,
+    // WhatsApp Phase 1 — provider-agnostic scaffolding.
+    // No-op when WHATSAPP_* env vars are unset; once configured the
+    // queue + processor + Meta Cloud provider are immediately live.
+    WhatsAppModule,
   ],
   providers: [
     // Apply ThrottlerGuard globally to ALL endpoints

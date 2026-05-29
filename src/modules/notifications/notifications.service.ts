@@ -45,18 +45,29 @@ export class NotificationsService {
    */
   private async _channelAllowed(
     userId: string | null,
-    channel: 'email' | 'sms' | 'push',
+    channel: 'email' | 'sms' | 'push' | 'whatsapp',
   ): Promise<boolean> {
     if (!userId) return true;
     try {
       const u = await this.usersRepository.findOne({
         where: { id: userId },
-        select: ['id', 'email_enabled', 'sms_enabled', 'push_enabled'] as any,
+        select: [
+          'id',
+          'email_enabled',
+          'sms_enabled',
+          'push_enabled',
+          'whatsapp_enabled',
+        ] as any,
       });
       if (!u) return true;
       if (channel === 'email') return u.email_enabled !== false;
       if (channel === 'sms') return u.sms_enabled !== false;
       if (channel === 'push') return u.push_enabled !== false;
+      // WhatsApp opt-in (Phase 1, May 29 2026). Default-allow when
+      // the column read failed or returned undefined for the same
+      // reason every other channel does — a transient DB hiccup
+      // shouldn't drop a chef's booking-request notification.
+      if (channel === 'whatsapp') return u.whatsapp_enabled !== false;
       return true;
     } catch (err: any) {
       this.logger.warn(

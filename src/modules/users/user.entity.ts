@@ -95,6 +95,18 @@ export class User {
   @Column({ default: true })
   sms_enabled: boolean;
 
+  // ─── WHATSAPP (Phase 1, May 29 2026) ────────────────────
+  // WhatsApp is the new fast-channel for chef booking-request
+  // approval (chef gets the message + Approve/Decline buttons in
+  // their thread). Defaulted to ON to match every other transactional
+  // channel — users can opt out from Settings (Phase 5 UI).
+  //
+  // The notifications service reads this flag via _channelAllowed
+  // before queueing a WhatsApp send; like email/sms it's gated
+  // upstream, NOT inside WhatsAppService itself.
+  @Column({ default: true })
+  whatsapp_enabled: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
