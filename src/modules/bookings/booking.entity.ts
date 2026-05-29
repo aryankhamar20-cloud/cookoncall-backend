@@ -95,7 +95,7 @@ export class Booking {
 
   // For food delivery orders — JSON array of {menuItemId, name, qty, price}
   @Column({ type: 'jsonb', nullable: true })
-  order_items: Record<string, any>[];
+  order_items: Record<string, any>[] | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   subtotal: number;
@@ -166,11 +166,11 @@ export class Booking {
   // Customer's category selections:
   // [{categoryId, categoryName, selectedDishes: [{id, name, type}]}]
   @Column({ type: 'jsonb', nullable: true })
-  selected_categories: Record<string, any>[];
+  selected_categories: Record<string, any>[] | null;
 
   // Selected add-ons: [{addonId, name, price}]
   @Column({ type: 'jsonb', nullable: true })
-  selected_addons: Record<string, any>[];
+  selected_addons: Record<string, any>[] | null;
 
   // Ingredient reminder sent flag — set to true after 2h-before email fires
   // so the cron doesn't double-send.

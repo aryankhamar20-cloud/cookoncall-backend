@@ -66,7 +66,11 @@ export class AnalyticsService {
         session_id: payload.session_id ?? null,
         page_path: payload.page_path ?? null,
         referrer: payload.referrer ?? null,
-        metadata: payload.metadata ?? null,
+        // TypeORM's _QueryDeepPartialEntity recursively wraps object
+        // types, which fights us for freeform jsonb columns. Cast to
+        // any here — metadata is intentionally untyped JSON and the
+        // entity field declares Record<string, unknown> | null.
+        metadata: (payload.metadata ?? null) as any,
         ip_address: payload.ip_address ?? null,
         user_agent: payload.user_agent ?? null,
         city: payload.city ?? null,

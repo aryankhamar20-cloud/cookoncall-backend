@@ -160,10 +160,10 @@ export class CooksService {
     }
 
     // Save verification documents
-    cook.aadhaar_url = dto.aadhaar_url;
-    cook.pan_url = dto.pan_url;
-    cook.address_proof_url = dto.address_proof_url || null;
-    cook.fssai_url = dto.fssai_url || null;
+    cook.aadhaar_url = dto.aadhaar_url ?? null;
+    cook.pan_url = dto.pan_url ?? null;
+    cook.address_proof_url = dto.address_proof_url ?? null;
+    cook.fssai_url = dto.fssai_url ?? null;
     cook.emergency_contact_name = dto.emergency_contact_name;
     cook.emergency_contact_phone = dto.emergency_contact_phone;
     cook.terms_accepted = true;

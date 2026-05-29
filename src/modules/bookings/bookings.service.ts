@@ -313,7 +313,7 @@ export class BookingsService {
       ingredient_reminder_sent: false,
     });
 
-    const saved = await this.bookingsRepository.save(booking);
+    const saved: Booking = await this.bookingsRepository.save(booking);
 
     this.notificationsService
       .notifyBookingCreated(
@@ -446,7 +446,7 @@ export class BookingsService {
       is_package_booking: false,
     });
 
-    const saved = await this.bookingsRepository.save(booking);
+    const saved: Booking = await this.bookingsRepository.save(booking);
 
     this.notificationsService
       .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
@@ -822,7 +822,7 @@ export class BookingsService {
     const cook = await this.cooksRepository.findOne({
       where: { user_id: userId },
     });
-    const isCook = cook && booking.cook_id === cook.id;
+    const isCook = !!cook && booking.cook_id === cook.id;
     const isUser = booking.user_id === userId;
     const isAdmin = userRole === 'admin';
 
