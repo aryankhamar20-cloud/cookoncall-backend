@@ -73,14 +73,22 @@ function resolveVisitFee(
   return { fee: VISIT_FEE_DEFAULT, serves_area: true };
 }
 
-// ─── NEW FLOW TIMING (Apr 21, 2026) ─────────────────────────────────────
+// ─── BOOKING LIFECYCLE WINDOWS ──────────────────────────────────────────
+// New flow (May 29, 2026): chef has 3 hours to accept or reject. On accept
+// the booking goes straight to CONFIRMED — there is no separate payment
+// window. Customer pays whenever they like up to (and including) the end
+// of the session; verifyEndOtp refuses to mark a booking COMPLETED unless
+// a CAPTURED Payment row exists.
 const CHEF_APPROVAL_WINDOW_MS = 3 * 60 * 60 * 1000;
-const PAYMENT_WINDOW_MS = 3 * 60 * 60 * 1000;
 
+// EXPIRABLE_STATUSES used to also include AWAITING_PAYMENT. Dropped because
+// CONFIRMED bookings are no longer auto-expired by a payment timer; they
+// only ever get cancelled if the customer or chef explicitly cancels, or
+// if the customer fails to pay before their chef tries to close out the
+// session via verifyEndOtp.
 const EXPIRABLE_STATUSES: BookingStatus[] = [
   BookingStatus.PENDING_CHEF_APPROVAL,
-  BookingStatus.AWAITING_PAYMENT,
-  BookingStatus.PENDING,
+  BookingStatus.PENDING, // legacy
 ];
 
 @Injectable()
@@ -740,10 +748,16 @@ export class BookingsService {
       );
     }
 
+    // New flow (May 29, 2026): chef accept goes straight to CONFIRMED.
+    // The 3-hour AWAITING_PAYMENT window has been removed — payment is
+    // now optional until the chef tries to verify the end-OTP at session
+    // close (see verifyEndOtp). Clear payment_expires_at on the off
+    // chance a row had one (legacy, or a partial migration row).
     const now = new Date();
-    booking.status = BookingStatus.AWAITING_PAYMENT;
+    booking.status = BookingStatus.CONFIRMED;
     booking.chef_responded_at = now;
-    booking.payment_expires_at = new Date(now.getTime() + PAYMENT_WINDOW_MS);
+    booking.confirmed_at = now;
+    booking.payment_expires_at = null;
 
     await this.bookingsRepository.save(booking);
 
@@ -856,27 +870,18 @@ export class BookingsService {
 
     const now = Date.now();
 
+    // Only PENDING_CHEF_APPROVAL (and the legacy PENDING) can auto-expire
+    // now. The AWAITING_PAYMENT branch was removed when the 3-hour
+    // payment window was retired (see acceptBooking). Existing rows that
+    // are still AWAITING_PAYMENT won't expire here, but the customer can
+    // still pay them via the normal flow, or the chef will be blocked
+    // from completing the session via verifyEndOtp until they do.
     if (
       booking.status === BookingStatus.PENDING_CHEF_APPROVAL ||
       booking.status === BookingStatus.PENDING
     ) {
       const createdMs = new Date(booking.created_at).getTime();
       if (now - createdMs >= CHEF_APPROVAL_WINDOW_MS) {
-        booking.status = BookingStatus.EXPIRED;
-        booking.cancelled_at = new Date();
-        await this.bookingsRepository.save(booking);
-        this.fireExpiryNotifications(booking).catch((): void => undefined);
-      }
-      return booking;
-    }
-
-    if (booking.status === BookingStatus.AWAITING_PAYMENT) {
-      const deadlineMs = booking.payment_expires_at
-        ? new Date(booking.payment_expires_at).getTime()
-        : (booking.chef_responded_at
-          ? new Date(booking.chef_responded_at).getTime() + PAYMENT_WINDOW_MS
-          : new Date(booking.created_at).getTime() + PAYMENT_WINDOW_MS);
-      if (now >= deadlineMs) {
         booking.status = BookingStatus.EXPIRED;
         booking.cancelled_at = new Date();
         await this.bookingsRepository.save(booking);
@@ -1155,6 +1160,30 @@ export class BookingsService {
       throw new BadRequestException('Invalid OTP');
     }
 
+    // ─── Payment-required gate (May 29, 2026) ──────────────────
+    // The new flow lets the customer pay any time between chef-accept
+    // and session-end. This is the bookend: the chef cannot mark the
+    // session COMPLETED unless a CAPTURED payment row exists for this
+    // booking. The booking itself stops here at IN_PROGRESS until the
+    // customer pays — chef can come back and verify the same OTP again
+    // (within the OTP TTL) or request a fresh one and try again.
+    //
+    // Skip-conditions:
+    //   • Cash flows would set a sentinel payment row with status
+    //     CAPTURED at the time cash is received. We don't ship cash
+    //     today, but the same gate applies — payment IS captured.
+    //   • Refund / dispute flips don't matter here; we only care about
+    //     the moment we close out the session.
+    const payment = await this.paymentsRepository.findOne({
+      where: { booking_id: bookingId },
+    });
+    if (!payment || payment.status !== PaymentStatus.CAPTURED) {
+      throw new BadRequestException(
+        'Payment must be completed before the session can be closed. ' +
+          'Please ask the customer to pay, then verify the OTP again.',
+      );
+    }
+
     const now = new Date();
     booking.status = BookingStatus.COMPLETED;
     booking.completed_at = now;
@@ -1266,6 +1295,12 @@ export class BookingsService {
   ) {
     const allowed: Record<BookingStatus, BookingStatus[]> = {
       [BookingStatus.PENDING_CHEF_APPROVAL]: [
+        // CONFIRMED is the new direct path (May 29, 2026): chef accept
+        // skips the AWAITING_PAYMENT step entirely.
+        BookingStatus.CONFIRMED,
+        // AWAITING_PAYMENT retained for backward compatibility — any
+        // legacy admin tool or pre-deployment booking that still uses
+        // the old transition keeps working.
         BookingStatus.AWAITING_PAYMENT,
         BookingStatus.CANCELLED_BY_USER,
         BookingStatus.CANCELLED_BY_COOK,
