@@ -275,14 +275,42 @@ export class NotificationsService {
   // BOOKING NOTIFICATION HELPERS
   // ═══════════════════════════════════════════════════════
 
-  /** Booking created → notify the chef */
+  /**
+   * Booking created — notify the chef AND the customer.
+   *
+   * Channel matrix (matches every other booking helper in this file):
+   *
+   *                       in-app row    email
+   *   chef                always         if channel allowed AND email known
+   *   customer            always         (none — sent separately by
+   *                                      bookings.service.sendBookingReceiptEmail
+   *                                      which uses the full receipt template)
+   *
+   * The chef email is the missing piece that this method previously
+   * lacked — without it, the chef would only see new requests if they
+   * happened to be looking at the dashboard. The bug was reported as
+   * "customer gets booking confirmation, cook never gets a request
+   * email when customer books a cook". Fixed by sending a Brevo email
+   * via the same fire-and-forget `sendDirectEmail` helper as every
+   * other chef-side stage notification (notifyChefAccepted,
+   * notifyChefRejected, notifyBookingExpired, etc.).
+   */
   async notifyBookingCreated(
     userId: string,
     cookUserId: string,
     bookingId: string,
     customerName: string,
+    chefDetails?: {
+      cookEmail: string | null;
+      chefName: string;
+      scheduledAt: Date;
+      address: string;
+      // Approx total — informational only, surfacing nothing the chef
+      // doesn't already see in the in-app row.
+      totalPrice: number;
+    },
   ) {
-    // Notify the chef
+    // 1. Chef in-app notification (always).
     await this.create(
       cookUserId,
       NotificationType.BOOKING_CREATED,
@@ -291,7 +319,7 @@ export class NotificationsService {
       { booking_id: bookingId },
     );
 
-    // Notify the customer (confirmation that booking was placed)
+    // 2. Customer in-app notification (always).
     await this.create(
       userId,
       NotificationType.BOOKING_CREATED,
@@ -299,6 +327,46 @@ export class NotificationsService {
       'Your booking request has been sent to the chef. You will be notified once they respond.',
       { booking_id: bookingId },
     );
+
+    // 3. Chef email (channel-gated). Same call shape as
+    //    notifyChefAccepted's customer-email branch above.
+    if (chefDetails?.cookEmail) {
+      const shortId = bookingId.slice(0, 8).toUpperCase();
+      const dateStr = chefDetails.scheduledAt.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const timeStr = chefDetails.scheduledAt.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const subject = `New Booking Request — #${shortId} | CookOnCall`;
+      const html = this.wrapBrandedHtml(
+        'New booking request',
+        `<p style="color:#5D4E37;font-size:14px;line-height:1.6;">
+           Hi <strong>${chefDetails.chefName}</strong>, you have a new booking request from
+           <strong>${customerName}</strong>. Please accept or decline within
+           <strong>3 hours</strong> — after that the request expires automatically.
+         </p>
+         <table style="width:100%;font-size:14px;border-collapse:collapse;margin-top:8px;">
+           <tr><td style="padding:6px 0;color:#8B7355;width:40%;">Booking ID</td><td style="padding:6px 0;color:#2D1810;font-weight:600;">#${shortId}</td></tr>
+           <tr><td style="padding:6px 0;color:#8B7355;">Date</td><td style="padding:6px 0;color:#2D1810;">${dateStr}</td></tr>
+           <tr><td style="padding:6px 0;color:#8B7355;">Time</td><td style="padding:6px 0;color:#2D1810;">${timeStr}</td></tr>
+           <tr><td style="padding:6px 0;color:#8B7355;vertical-align:top;">Address</td><td style="padding:6px 0;color:#2D1810;">${chefDetails.address}</td></tr>
+           <tr><td style="padding:6px 0;color:#8B7355;">Estimated total</td><td style="padding:6px 0;color:#2D1810;font-weight:600;">&#8377;${chefDetails.totalPrice.toFixed(2)}</td></tr>
+         </table>
+         <p style="color:#8B7355;font-size:13px;line-height:1.6;margin-top:16px;">
+           Open the CookOnCall app &rarr; Orders &rarr; Accept or Decline.
+         </p>`,
+      );
+      if (await this._channelAllowed(cookUserId, 'email')) {
+        this.sendDirectEmail(chefDetails.cookEmail, subject, html).catch(
+          (): void => undefined,
+        );
+      }
+    }
   }
 
   /** Chef accepted → notify customer (pay within 3 hours) */
