@@ -68,7 +68,8 @@ export class FcmService {
         this.logger.debug(`FCM sent to ${fcmToken.slice(0, 20)}... — messageId: ${result.results?.[0]?.message_id}`);
       }
     } catch (err) {
-      this.logger.error(`FCM request error: ${err.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`FCM request error: ${msg}`);
     }
   }
 
@@ -117,7 +118,8 @@ export class FcmService {
         );
       }
     } catch (err) {
-      this.logger.error(`FCM batch request error: ${err.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`FCM batch request error: ${msg}`);
     }
   }
 }

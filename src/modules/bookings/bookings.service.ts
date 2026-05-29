@@ -770,7 +770,8 @@ export class BookingsService {
     });
     for (const b of candidates) {
       try { await this.expireIfLapsed(b); } catch (err) {
-        this.logger.warn(`Expiry sweep failed for ${b.id}: ${err?.message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Expiry sweep failed for ${b.id}: ${msg}`);
       }
     }
   }
@@ -782,7 +783,8 @@ export class BookingsService {
     });
     for (const b of candidates) {
       try { await this.expireIfLapsed(b); } catch (err) {
-        this.logger.warn(`Expiry sweep failed for ${b.id}: ${err?.message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Expiry sweep failed for ${b.id}: ${msg}`);
       }
     }
   }
@@ -1124,7 +1126,8 @@ export class BookingsService {
 
         this.logger.log(`Ingredient reminder sent for booking ${booking.id}`);
       } catch (err) {
-        this.logger.warn(`Ingredient reminder failed for ${booking.id}: ${err?.message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Ingredient reminder failed for ${booking.id}: ${msg}`);
       }
     }
   }

@@ -43,7 +43,8 @@ export class RedisOtpLimiterService {
       });
       await this.client.connect();
     } catch (err) {
-      this.logger.error(`Failed to connect Redis OTP limiter: ${err.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to connect Redis OTP limiter: ${msg}`);
     }
   }
 
@@ -96,7 +97,8 @@ export class RedisOtpLimiterService {
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
       // Redis error — fail open
-      this.logger.error(`Redis OTP limiter error for ${email}: ${err.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Redis OTP limiter error for ${email}: ${msg}`);
     }
   }
 

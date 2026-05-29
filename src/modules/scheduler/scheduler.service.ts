@@ -26,7 +26,8 @@ export class SchedulerService {
     try {
       await this.bookingsService.sendIngredientReminders();
     } catch (err) {
-      this.logger.error(`Ingredient reminder cron failed: ${err?.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Ingredient reminder cron failed: ${msg}`);
     }
   }
 }

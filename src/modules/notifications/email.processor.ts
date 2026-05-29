@@ -53,7 +53,8 @@ export class EmailProcessor {
         throw new Error(`Brevo error ${response.status}: ${JSON.stringify(result)}`);
       }
     } catch (error) {
-      this.logger.error(`Queued email failed for ${to}: ${error.message}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Queued email failed for ${to}: ${msg}`);
       throw error; // Bull will retry (3 attempts with exponential backoff)
     }
   }
