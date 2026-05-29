@@ -7,6 +7,8 @@ import { Queue } from 'bull';
 import { Notification, NotificationType } from './notification.entity';
 import { User } from '../users/user.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { CHEF_BOOKING_REQUEST } from '../whatsapp/templates';
 
 @Injectable()
 export class NotificationsService {
@@ -24,6 +26,11 @@ export class NotificationsService {
     // Round 4 / Analytics Phase 2 — record `notification_clicked`
     // events so the admin Broadcast panel can show CTR per blast.
     private readonly analytics: AnalyticsService,
+    // WhatsApp Phase 2 (May 29, 2026) — chef booking-request approval
+    // template sends through here. The service short-circuits when
+    // WHATSAPP_* env is unset, so this dep is safe in dev / preview /
+    // CI without WABA credentials.
+    private readonly whatsapp: WhatsAppService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -313,6 +320,11 @@ export class NotificationsService {
     customerName: string,
     chefDetails?: {
       cookEmail: string | null;
+      // WhatsApp Phase 2 (May 29, 2026) — chef booking-request via
+      // WhatsApp uses this. Stored on User.phone (varchar(15));
+      // WhatsAppService normalises to E.164 internally so any plausible
+      // input format is accepted.
+      cookPhone?: string | null;
       chefName: string;
       scheduledAt: Date;
       address: string;
@@ -339,20 +351,26 @@ export class NotificationsService {
       { booking_id: bookingId },
     );
 
+    if (!chefDetails) return;
+
+    // Format once — used by both the email branch and the WhatsApp
+    // branch below. Cheap (microseconds), keeps the two branches in
+    // lockstep on the date/time strings the chef sees.
+    const shortId = bookingId.slice(0, 8).toUpperCase();
+    const dateStr = chefDetails.scheduledAt.toLocaleDateString('en-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const timeStr = chefDetails.scheduledAt.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
     // 3. Chef email (channel-gated). Same call shape as
     //    notifyChefAccepted's customer-email branch above.
-    if (chefDetails?.cookEmail) {
-      const shortId = bookingId.slice(0, 8).toUpperCase();
-      const dateStr = chefDetails.scheduledAt.toLocaleDateString('en-IN', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-      const timeStr = chefDetails.scheduledAt.toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+    if (chefDetails.cookEmail) {
       const subject = `New Booking Request — #${shortId} | CookOnCall`;
       const html = this.wrapBrandedHtml(
         'New booking request',
@@ -378,6 +396,73 @@ export class NotificationsService {
         );
       }
     }
+
+    // 4. Chef WhatsApp (Phase 2 — channel-gated). Identical gating
+    //    semantics to the email branch above:
+    //      - skipped when chef has no phone on file;
+    //      - skipped when chef has muted the channel
+    //        (`whatsapp_enabled === false`);
+    //      - silently no-ops when WHATSAPP_* env is unset (the
+    //        WhatsAppService short-circuits inside `sendTemplate`).
+    //
+    //    The Approve/Decline quick-reply buttons carry payloads of the
+    //    form `APPROVE_<bookingId>` / `REJECT_<bookingId>`. Phase 3's
+    //    inbound webhook routes those payloads back into
+    //    BookingsService.acceptBooking / rejectBooking using the chef's
+    //    phone number as the auth boundary.
+    //
+    //    Failure is fire-and-forget — WhatsApp going dark must never
+    //    break the in-app + email path the user already relies on.
+    if (chefDetails.cookPhone) {
+      const allowWhatsApp = await this._channelAllowed(cookUserId, 'whatsapp');
+      if (allowWhatsApp) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: chefDetails.cookPhone,
+            template: CHEF_BOOKING_REQUEST,
+            vars: [
+              this.sanitizeForWhatsAppVar(chefDetails.chefName, 64),
+              this.sanitizeForWhatsAppVar(customerName, 64),
+              shortId,
+              this.sanitizeForWhatsAppVar(dateStr, 80),
+              this.sanitizeForWhatsAppVar(timeStr, 32),
+              this.sanitizeForWhatsAppVar(chefDetails.address, 200),
+              chefDetails.totalPrice.toFixed(0),
+            ],
+            // CHEF_BOOKING_REQUEST template registers two quick-reply
+            // buttons (Approve / Decline). buttonSuffixes is mapped 1:1
+            // onto template.buttons → emitted payloads are
+            // `APPROVE_<bookingId>` and `REJECT_<bookingId>`.
+            buttonSuffixes: [bookingId, bookingId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          // sendTemplate is designed to never throw — but be defensive,
+          // failure here cannot block the booking flow.
+          this.logger.warn(
+            `WhatsApp chef-request failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Sanitise a free-text string for use as a WhatsApp template variable.
+   *
+   * Meta rejects template body parameters that contain raw newlines,
+   * tabs, or 4+ consecutive whitespace characters. Long values get
+   * trimmed to `maxLen` so we stay under the per-component 1024-char
+   * limit even after Meta concatenates with the template's static text.
+   */
+  private sanitizeForWhatsAppVar(value: string, maxLen: number): string {
+    return String(value ?? '')
+      .replace(/[\r\n\t]+/g, ', ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, maxLen);
   }
 
   /**

@@ -84,6 +84,19 @@ function makeService(opts: {
     get: jest.fn(() => opts.brevoApiKey ?? 'test-brevo-api-key'),
   };
   const analytics: any = { recordEvent: jest.fn() };
+  // Phase 2 — NotificationsService now depends on WhatsAppService for
+  // the chef booking-request branch. This spec exercises only the
+  // email/in-app branches; mocking sendTemplate to a no-op resolved
+  // promise keeps the constructor happy without coupling the email
+  // assertions to anything WhatsApp-shaped.
+  const whatsapp: any = {
+    sendTemplate: jest.fn(async () => true),
+    sendText: jest.fn(),
+    isConfigured: jest.fn(() => true),
+    verifySignature: jest.fn(),
+    verifyChallenge: jest.fn(),
+    parseInbound: jest.fn(),
+  };
 
   const service = new NotificationsService(
     notificationsRepo,
@@ -92,6 +105,7 @@ function makeService(opts: {
     noopQueue,
     config,
     analytics,
+    whatsapp,
   );
 
   // Spy on sendDirectEmail rather than letting it actually call fetch.
