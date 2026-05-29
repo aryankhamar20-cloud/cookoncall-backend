@@ -51,6 +51,17 @@ function makeService(usersFindOne: jest.Mock) {
   const noopQueue: any = { add: jest.fn() };
   const config: any = { get: jest.fn(() => '') };
   const analytics: any = { track: jest.fn() };
+  // Phase 2 — NotificationsService constructor takes a WhatsAppService
+  // dep too; mocked here to a no-op since this spec only exercises
+  // _channelAllowed (no actual WhatsApp send happens).
+  const whatsapp: any = {
+    sendTemplate: jest.fn(async () => true),
+    sendText: jest.fn(),
+    isConfigured: jest.fn(() => true),
+    verifySignature: jest.fn(),
+    verifyChallenge: jest.fn(),
+    parseInbound: jest.fn(),
+  };
 
   return new NotificationsService(
     notificationsRepo,
@@ -59,6 +70,7 @@ function makeService(usersFindOne: jest.Mock) {
     noopQueue,
     config,
     analytics,
+    whatsapp,
   );
 }
 

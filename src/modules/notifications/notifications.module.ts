@@ -8,6 +8,7 @@ import { SmsProcessor } from './sms.processor';
 import { Notification } from './notification.entity';
 import { User } from '../users/user.entity';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -25,6 +26,14 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     // theoretical circular import path AnalyticsModule -> AdminModule
     // -> NotificationsModule that already exists in this codebase.
     forwardRef(() => AnalyticsModule),
+    // WhatsApp Phase 2 — notifyBookingCreated calls WhatsAppService
+    // .sendTemplate(CHEF_BOOKING_REQUEST, ...) when the chef has a
+    // phone + has not muted the channel. WhatsAppModule's `exports`
+    // expose WhatsAppService; no forwardRef needed here because
+    // WhatsAppModule does NOT import NotificationsModule (one-way
+    // dependency at this point — Phase 3 will introduce the back-edge
+    // via BookingsModule and resolve it locally with forwardRef).
+    WhatsAppModule,
   ],
   controllers: [NotificationsController],
   providers: [NotificationsService, EmailProcessor, SmsProcessor],
