@@ -27,7 +27,7 @@ export class PromoCode {
   value: number;              // % for PERCENTAGE, ₹ amount for FLAT
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  max_discount: number;       // cap for PERCENTAGE (e.g. max ₹200)
+  max_discount: number | null;       // cap for PERCENTAGE (e.g. max ₹200)
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   min_order_amount: number;   // minimum subtotal to apply promo
@@ -39,16 +39,16 @@ export class PromoCode {
   single_use: boolean;        // if true, can only be used once per user
 
   @Column({ nullable: true })
-  max_uses: number;           // global usage cap (null = unlimited)
+  max_uses: number | null;           // global usage cap (null = unlimited)
 
   @Column({ default: 0 })
   used_count: number;
 
   @Column({ type: 'timestamptz', nullable: true })
-  expires_at: Date;
+  expires_at: Date | null;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

@@ -27,7 +27,7 @@ export class User {
   email: string;
 
   @Column({ length: 15, nullable: true })
-  phone: string;
+  phone: string | null;
 
   @Column({ default: false })
   phone_verified: boolean;
@@ -37,45 +37,45 @@ export class User {
 
   @Exclude()
   @Column({ nullable: true })
-  password: string;
+  password: string | null;
 
   @Column({ type: 'enum', enum: UserRole, default: UserRole.USER })
   role: UserRole;
 
   @Column({ nullable: true })
-  avatar: string;
+  avatar: string | null;
 
   @Column({ nullable: true })
-  google_id: string;
+  google_id: string | null;
 
   // ─── ADDRESS & GEOLOCATION ─────────────────────────────
   @Column({ type: 'text', nullable: true })
-  address: string;
+  address: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  latitude: number;
+  latitude: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  longitude: number;
+  longitude: number | null;
 
   @Exclude()
   @Column({ nullable: true })
-  refresh_token: string;
+  refresh_token: string | null;
 
   @Exclude()
   @Column({ nullable: true, length: 6 })
-  otp: string;
+  otp: string | null;
 
   @Exclude()
   @Column({ type: 'timestamptz', nullable: true })
-  otp_expires_at: Date;
+  otp_expires_at: Date | null;
 
   @Column({ default: true })
   is_active: boolean;
 
   // FCM push notification token (updated by Flutter app on login/launch)
   @Column({ nullable: true, type: 'text' })
-  fcm_token: string;
+  fcm_token: string | null;
 
   // ─── NOTIFICATION PREFERENCES (Round 4) ─────────────────
   // Customers and chefs can mute individual channels from Settings.

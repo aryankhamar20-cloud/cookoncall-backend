@@ -45,7 +45,7 @@ export class Review {
   rating: number; // 1-5
 
   @Column({ type: 'text', nullable: true })
-  comment: string;
+  comment: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

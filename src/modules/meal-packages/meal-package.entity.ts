@@ -34,7 +34,7 @@ export class MealPackage {
   name: string;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   // ─── GUEST-TIER PRICING ──────────────────────────────
   // Chef sets a price per guest count. +₹59 per extra person beyond 5.
@@ -62,12 +62,12 @@ export class MealPackage {
   is_active: boolean;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  cuisine: string;
+  cuisine: string | null;
 
   // Sent to customer via WhatsApp + email 2h before session.
   // Lists all ingredients they need to arrange.
   @Column({ type: 'text', nullable: true })
-  ingredient_note: string;
+  ingredient_note: string | null;
 
   // Prices locked at booking for this many days (default 7)
   @Column({ type: 'int', default: 7 })

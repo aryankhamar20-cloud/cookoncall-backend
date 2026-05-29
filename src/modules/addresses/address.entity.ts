@@ -37,10 +37,10 @@ export class Address {
   label: AddressLabel;
 
   @Column({ length: 100, nullable: true })
-  contact_name: string;
+  contact_name: string | null;
 
   @Column({ length: 15, nullable: true })
-  contact_phone: string;
+  contact_phone: string | null;
 
   @Column({ length: 100 })
   house_no: string;
@@ -49,7 +49,7 @@ export class Address {
   street: string;
 
   @Column({ length: 100, nullable: true })
-  landmark: string;
+  landmark: string | null;
 
   @Column({ length: 100 })
   area: string;
@@ -69,10 +69,10 @@ export class Address {
   pincode: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  latitude: number;
+  latitude: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  longitude: number;
+  longitude: number | null;
 
   @Column({ default: false })
   is_default: boolean;

@@ -46,31 +46,31 @@ export class Payment {
   status: PaymentStatus;
 
   @Column({ nullable: true })
-  razorpay_order_id: string;
+  razorpay_order_id: string | null;
 
   @Column({ nullable: true })
-  razorpay_payment_id: string;
+  razorpay_payment_id: string | null;
 
   @Column({ nullable: true })
-  razorpay_signature: string;
+  razorpay_signature: string | null;
 
   @Column({ nullable: true })
-  razorpay_transfer_id: string;
+  razorpay_transfer_id: string | null;
 
   @Column({ nullable: true })
-  refund_id: string;
+  refund_id: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  refund_amount: number;
+  refund_amount: number | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  paid_at: Date;
+  paid_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  released_at: Date;
+  released_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  refunded_at: Date;
+  refunded_at: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

@@ -76,10 +76,10 @@ export class Booking {
   address: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  latitude: number;
+  latitude: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  longitude: number;
+  longitude: number | null;
 
   // P1.6 — snapshot of customer's area at booking time. Even if the customer
   // edits the address later, the booking remembers what area was used to
@@ -88,10 +88,10 @@ export class Booking {
   customer_area_slug: string | null;
 
   @Column({ type: 'text', nullable: true })
-  dishes: string;
+  dishes: string | null;
 
   @Column({ type: 'text', nullable: true })
-  instructions: string;
+  instructions: string | null;
 
   // For food delivery orders — JSON array of {menuItemId, name, qty, price}
   @Column({ type: 'jsonb', nullable: true })
@@ -114,50 +114,50 @@ export class Booking {
   platform_fee_percent: number;
 
   @Column({ type: 'text', nullable: true })
-  cancellation_reason: string;
+  cancellation_reason: string | null;
 
   // ─── CHEF REJECTION (Apr 21, 2026) ───────────────────
   @Column({ type: 'text', nullable: true })
-  rejection_reason: string;
+  rejection_reason: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  chef_responded_at: Date;
+  chef_responded_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  payment_expires_at: Date;
+  payment_expires_at: Date | null;
 
   @Column({ type: 'uuid', nullable: true })
-  rebooked_to_id: string;
+  rebooked_to_id: string | null;
 
   // ─── COOKING SESSION OTP ─────────────────────────────
   @Column({ type: 'varchar', length: 6, nullable: true })
-  start_otp: string;
+  start_otp: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  start_otp_expires_at: Date;
+  start_otp_expires_at: Date | null;
 
   @Column({ type: 'varchar', length: 6, nullable: true })
-  end_otp: string;
+  end_otp: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  end_otp_expires_at: Date;
+  end_otp_expires_at: Date | null;
 
   @Column({ type: 'int', nullable: true })
-  actual_duration_minutes: number;
+  actual_duration_minutes: number | null;
 
   // ─── CANCELLATION REFUND ─────────────────────────────
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  refund_amount: number;
+  refund_amount: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  chef_cancellation_fee: number;
+  chef_cancellation_fee: number | null;
 
   // ─── PACKAGE BOOKING (P1.5c — Apr 27, 2026) ─────────
   // Null on regular "build your own" bookings.
   // package_id references meal_packages.id (no FK constraint — avoids cascade
   // complexity; referential integrity enforced at service layer).
   @Column({ type: 'uuid', nullable: true })
-  package_id: string;
+  package_id: string | null;
 
   // Flag so we can quickly filter package vs menu bookings without joins.
   @Column({ type: 'boolean', default: false })
@@ -179,16 +179,16 @@ export class Booking {
 
   // ─── TIMESTAMPS ──────────────────────────────────────
   @Column({ type: 'timestamptz', nullable: true })
-  confirmed_at: Date;
+  confirmed_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  started_at: Date;
+  started_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  completed_at: Date;
+  completed_at: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  cancelled_at: Date;
+  cancelled_at: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

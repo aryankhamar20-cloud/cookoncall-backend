@@ -96,7 +96,7 @@ export class AvailabilityOverride {
   windows: { start: string; end: string }[];
 
   @Column({ type: 'text', nullable: true })
-  note: string;
+  note: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
