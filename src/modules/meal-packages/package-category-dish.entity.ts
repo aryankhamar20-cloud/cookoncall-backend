@@ -35,7 +35,7 @@ export class PackageCategoryDish {
   @Column({ type: 'enum', enum: DishType, default: DishType.VEG })
   type: DishType;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   image: string | null;
 
   @Column({ type: 'int', default: 0 })

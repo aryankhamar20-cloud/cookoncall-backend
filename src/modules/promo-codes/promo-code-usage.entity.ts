@@ -21,7 +21,7 @@ export class PromoCodeUsage {
   @Column()
   user_id: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   booking_id: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })

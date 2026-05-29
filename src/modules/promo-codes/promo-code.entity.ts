@@ -38,7 +38,7 @@ export class PromoCode {
   @Column({ default: false })
   single_use: boolean;        // if true, can only be used once per user
 
-  @Column({ nullable: true })
+  @Column({ type: 'int', nullable: true })
   max_uses: number | null;           // global usage cap (null = unlimited)
 
   @Column({ default: 0 })
