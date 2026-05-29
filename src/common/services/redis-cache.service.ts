@@ -86,6 +86,48 @@ export class RedisCacheService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * SET-NX (set-if-not-exists) with TTL — the canonical idempotency
+   * primitive. Returns:
+   *
+   *   true  — the key did not exist; we just claimed it. Caller should
+   *           proceed with the side-effect.
+   *   false — the key already existed (some earlier delivery claimed
+   *           it within the TTL window). Caller MUST treat the request
+   *           as a duplicate and drop it.
+   *
+   * Fail-open: when Redis is unreachable (or the SET errors) we return
+   * true. The reasoning is the same as every other helper in this file
+   * — better to occasionally process a duplicate than to silently drop
+   * a legitimate first-time event because Redis blipped. Idempotency
+   * is a best-effort optimisation here, not a correctness requirement
+   * (the underlying state machines — booking accept/reject etc — are
+   * themselves idempotent and refuse duplicate transitions with a
+   * clear error).
+   *
+   * Used by the WhatsApp inbound webhook (Phase 3) to dedupe Meta's
+   * retried `messages.<wamid>` deliveries inside a 5-minute window.
+   */
+  async setIfNotExists(
+    key: string,
+    value: unknown,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    if (!this.isReady()) return true;
+    try {
+      // redis v4 returns 'OK' when the SET succeeded, null when the
+      // NX condition prevented the write.
+      const result = await this.client!.set(key, JSON.stringify(value), {
+        NX: true,
+        EX: ttlSeconds,
+      });
+      return result === 'OK';
+    } catch (err: any) {
+      this.logger.warn(`cache.setIfNotExists(${key}) failed: ${err?.message || err}`);
+      return true;
+    }
+  }
+
   /** Delete a single key. */
   async del(key: string): Promise<void> {
     if (!this.isReady()) return;

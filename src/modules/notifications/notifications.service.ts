@@ -7,6 +7,13 @@ import { Queue } from 'bull';
 import { Notification, NotificationType } from './notification.entity';
 import { User } from '../users/user.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import {
+  CHEF_BOOKING_CONFIRMED,
+  CHEF_BOOKING_REQUEST,
+  CUSTOMER_BOOKING_CONFIRMED,
+  CUSTOMER_BOOKING_REJECTED,
+} from '../whatsapp/templates';
 
 @Injectable()
 export class NotificationsService {
@@ -24,6 +31,11 @@ export class NotificationsService {
     // Round 4 / Analytics Phase 2 — record `notification_clicked`
     // events so the admin Broadcast panel can show CTR per blast.
     private readonly analytics: AnalyticsService,
+    // WhatsApp Phase 2 (May 29, 2026) — chef booking-request approval
+    // template sends through here. The service short-circuits when
+    // WHATSAPP_* env is unset, so this dep is safe in dev / preview /
+    // CI without WABA credentials.
+    private readonly whatsapp: WhatsAppService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -313,6 +325,11 @@ export class NotificationsService {
     customerName: string,
     chefDetails?: {
       cookEmail: string | null;
+      // WhatsApp Phase 2 (May 29, 2026) — chef booking-request via
+      // WhatsApp uses this. Stored on User.phone (varchar(15));
+      // WhatsAppService normalises to E.164 internally so any plausible
+      // input format is accepted.
+      cookPhone?: string | null;
       chefName: string;
       scheduledAt: Date;
       address: string;
@@ -339,20 +356,26 @@ export class NotificationsService {
       { booking_id: bookingId },
     );
 
+    if (!chefDetails) return;
+
+    // Format once — used by both the email branch and the WhatsApp
+    // branch below. Cheap (microseconds), keeps the two branches in
+    // lockstep on the date/time strings the chef sees.
+    const shortId = bookingId.slice(0, 8).toUpperCase();
+    const dateStr = chefDetails.scheduledAt.toLocaleDateString('en-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const timeStr = chefDetails.scheduledAt.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
     // 3. Chef email (channel-gated). Same call shape as
     //    notifyChefAccepted's customer-email branch above.
-    if (chefDetails?.cookEmail) {
-      const shortId = bookingId.slice(0, 8).toUpperCase();
-      const dateStr = chefDetails.scheduledAt.toLocaleDateString('en-IN', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-      const timeStr = chefDetails.scheduledAt.toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+    if (chefDetails.cookEmail) {
       const subject = `New Booking Request — #${shortId} | CookOnCall`;
       const html = this.wrapBrandedHtml(
         'New booking request',
@@ -378,6 +401,73 @@ export class NotificationsService {
         );
       }
     }
+
+    // 4. Chef WhatsApp (Phase 2 — channel-gated). Identical gating
+    //    semantics to the email branch above:
+    //      - skipped when chef has no phone on file;
+    //      - skipped when chef has muted the channel
+    //        (`whatsapp_enabled === false`);
+    //      - silently no-ops when WHATSAPP_* env is unset (the
+    //        WhatsAppService short-circuits inside `sendTemplate`).
+    //
+    //    The Approve/Decline quick-reply buttons carry payloads of the
+    //    form `APPROVE_<bookingId>` / `REJECT_<bookingId>`. Phase 3's
+    //    inbound webhook routes those payloads back into
+    //    BookingsService.acceptBooking / rejectBooking using the chef's
+    //    phone number as the auth boundary.
+    //
+    //    Failure is fire-and-forget — WhatsApp going dark must never
+    //    break the in-app + email path the user already relies on.
+    if (chefDetails.cookPhone) {
+      const allowWhatsApp = await this._channelAllowed(cookUserId, 'whatsapp');
+      if (allowWhatsApp) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: chefDetails.cookPhone,
+            template: CHEF_BOOKING_REQUEST,
+            vars: [
+              this.sanitizeForWhatsAppVar(chefDetails.chefName, 64),
+              this.sanitizeForWhatsAppVar(customerName, 64),
+              shortId,
+              this.sanitizeForWhatsAppVar(dateStr, 80),
+              this.sanitizeForWhatsAppVar(timeStr, 32),
+              this.sanitizeForWhatsAppVar(chefDetails.address, 200),
+              chefDetails.totalPrice.toFixed(0),
+            ],
+            // CHEF_BOOKING_REQUEST template registers two quick-reply
+            // buttons (Approve / Decline). buttonSuffixes is mapped 1:1
+            // onto template.buttons → emitted payloads are
+            // `APPROVE_<bookingId>` and `REJECT_<bookingId>`.
+            buttonSuffixes: [bookingId, bookingId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          // sendTemplate is designed to never throw — but be defensive,
+          // failure here cannot block the booking flow.
+          this.logger.warn(
+            `WhatsApp chef-request failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Sanitise a free-text string for use as a WhatsApp template variable.
+   *
+   * Meta rejects template body parameters that contain raw newlines,
+   * tabs, or 4+ consecutive whitespace characters. Long values get
+   * trimmed to `maxLen` so we stay under the per-component 1024-char
+   * limit even after Meta concatenates with the template's static text.
+   */
+  private sanitizeForWhatsAppVar(value: string, maxLen: number): string {
+    return String(value ?? '')
+      .replace(/[\r\n\t]+/g, ', ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, maxLen);
   }
 
   /**
@@ -397,6 +487,22 @@ export class NotificationsService {
     customerEmail: string | null,
     bookingId: string,
     chefName: string,
+    // WhatsApp Phase 4 (May 29, 2026) — when supplied, the customer
+    // and chef each receive a confirmation WhatsApp template after
+    // the chef's accept. Optional so legacy callers (none today)
+    // continue to work — when omitted, the in-app + email behaviour
+    // is byte-identical to pre-Phase-4.
+    whatsappDetails?: {
+      customerName: string;
+      customerPhone: string | null;
+      // Chef channel-pref gate uses this.
+      chefUserId: string;
+      chefPhone: string | null;
+      // Used to format the date_str / time_str template vars so
+      // both parties see the same booking time the customer saw at
+      // creation time. Pulled from the Booking row at the call site.
+      scheduledAt: Date;
+    },
   ) {
     const title = 'Booking confirmed';
     const message =
@@ -430,6 +536,84 @@ export class NotificationsService {
         this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
       }
     }
+
+    // ─── WhatsApp confirmations (Phase 4) ──────────────
+    // Two independent sends, each with its own gate:
+    //   1. Customer side — confirms the booking is live, mirrors the
+    //      branded email body's payment-optional-until-session-end
+    //      messaging in template form.
+    //   2. Chef side — keeps the chef's WhatsApp thread coherent.
+    //      WhatsApp quick-reply button taps don't auto-acknowledge in
+    //      the chat (the chef sees their own button tap and then
+    //      silence); CHEF_BOOKING_CONFIRMED is the visible "we got
+    //      your accept" receipt. Sent regardless of which channel
+    //      the chef accepted through (web, mobile, WhatsApp button)
+    //      so the thread always has the booking summary for reference.
+    //
+    // Failure on either branch is fire-and-forget — never blocks the
+    // booking flow.
+    if (whatsappDetails) {
+      const shortId = bookingId.slice(0, 8).toUpperCase();
+      const dateStr = whatsappDetails.scheduledAt.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const timeStr = whatsappDetails.scheduledAt.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const customerNameVar = this.sanitizeForWhatsAppVar(
+        whatsappDetails.customerName,
+        64,
+      );
+      const chefNameVar = this.sanitizeForWhatsAppVar(chefName, 64);
+      const dateVar = this.sanitizeForWhatsAppVar(dateStr, 80);
+      const timeVar = this.sanitizeForWhatsAppVar(timeStr, 32);
+
+      // 1. Customer-side WhatsApp.
+      if (
+        whatsappDetails.customerPhone &&
+        (await this._channelAllowed(customerUserId, 'whatsapp'))
+      ) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: whatsappDetails.customerPhone,
+            template: CUSTOMER_BOOKING_CONFIRMED,
+            vars: [customerNameVar, chefNameVar, dateVar, timeVar, shortId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `WhatsApp customer-confirmed failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+
+      // 2. Chef-side WhatsApp.
+      if (
+        whatsappDetails.chefPhone &&
+        (await this._channelAllowed(whatsappDetails.chefUserId, 'whatsapp'))
+      ) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: whatsappDetails.chefPhone,
+            template: CHEF_BOOKING_CONFIRMED,
+            vars: [chefNameVar, customerNameVar, dateVar, timeVar, shortId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `WhatsApp chef-confirmed failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+    }
   }
 
   /** Legacy helper — kept for payments.service backward compatibility */
@@ -452,6 +636,15 @@ export class NotificationsService {
     customerEmail: string | null,
     bookingId: string,
     chefName: string,
+    // WhatsApp Phase 4 (May 29, 2026) — customer-side WhatsApp
+    // rejection notice. Chef side intentionally not notified here
+    // because their decline tap (or web-app button click) IS the
+    // confirmation; sending another WhatsApp message saying "you
+    // declined" would just clutter the thread.
+    whatsappDetails?: {
+      customerName: string;
+      customerPhone: string | null;
+    },
   ) {
     const title = 'Unable to confirm your booking';
     const message = `Unfortunately ${chefName} is unable to accept your booking. You can book another chef at no extra charge, or close this request.`;
@@ -475,6 +668,34 @@ export class NotificationsService {
       );
       if (await this._channelAllowed(customerUserId, 'email')) {
         this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
+      }
+    }
+
+    // ─── Customer WhatsApp rejection (Phase 4) ─────────
+    // No reason exposed — same contract as the email above. Reason
+    // stays in `bookings.rejection_reason`, admin-only. The customer
+    // sees enough to know the booking didn't go through and that
+    // they can rebook elsewhere.
+    if (
+      whatsappDetails?.customerPhone &&
+      (await this._channelAllowed(customerUserId, 'whatsapp'))
+    ) {
+      try {
+        await this.whatsapp.sendTemplate({
+          to: whatsappDetails.customerPhone,
+          template: CUSTOMER_BOOKING_REJECTED,
+          vars: [
+            this.sanitizeForWhatsAppVar(whatsappDetails.customerName, 64),
+            this.sanitizeForWhatsAppVar(chefName, 64),
+          ],
+          correlationId: bookingId,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `WhatsApp customer-rejected failed for booking ${bookingId.slice(0, 8)}: ${
+            (err as Error).message
+          }`,
+        );
       }
     }
   }
