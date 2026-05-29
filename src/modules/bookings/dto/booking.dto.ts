@@ -148,6 +148,19 @@ export class CreateBookingDto {
   @IsArray()
   @IsUUID('all', { each: true })
   selectedAddonIds?: string[];
+
+  // ─── Promo code (May 29, 2026) ─────────────────────────
+  // Optional. If present, the server validates against the live
+  // promo_codes table and applies the discount in createBooking.
+  // Validation surfaces the same error shapes as POST /promo-codes/validate
+  // — invalid/expired/single-use-already-used/min-order-amount —
+  // so the UX of "Apply" before "Book" can preview the discount and
+  // either click-through still gets a clean rejection if the promo
+  // changes between the two calls.
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  promo_code?: string;
 }
 
 export class UpdateBookingStatusDto {
