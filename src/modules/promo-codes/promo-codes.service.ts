@@ -131,7 +131,7 @@ export class PromoCodesService {
         ip_address: meta.ip,
         user_agent: meta.userAgent,
       })
-      .catch(() => undefined);
+      .catch((): void => undefined);
 
     return saved;
   }
@@ -279,7 +279,7 @@ export class PromoCodesService {
         ip_address: meta.ip,
         user_agent: meta.userAgent,
       })
-      .catch(() => undefined);
+      .catch((): void => undefined);
 
     return { deleted: true, message: `Promo code "${promo.code}" deleted.` };
   }

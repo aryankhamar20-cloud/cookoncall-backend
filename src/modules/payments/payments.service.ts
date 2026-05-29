@@ -220,11 +220,11 @@ export class PaymentsService {
           booking.id,
           booking.cook?.user?.name || 'Your chef',
         )
-        .catch(() => undefined);
+        .catch((): void => undefined);
       if (booking.cook?.user_id) {
         this.notificationsService
           .notifyPaymentReceived(booking.cook.user_id, Number(payment.amount))
-          .catch(() => undefined);
+          .catch((): void => undefined);
       }
     }
 
@@ -376,7 +376,7 @@ export class PaymentsService {
             booking.id,
             booking.cook?.user?.name || 'Your chef',
           )
-          .catch(() => undefined);
+          .catch((): void => undefined);
       }
     }
   }

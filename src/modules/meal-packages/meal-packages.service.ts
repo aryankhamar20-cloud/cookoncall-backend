@@ -94,7 +94,7 @@ export class MealPackagesService {
     }
 
     const saved = await this.packageRepo.save(pkg);
-    this._invalidateCookCache(cook.id).catch(() => undefined);
+    this._invalidateCookCache(cook.id).catch((): void => undefined);
     return saved;
   }
 
@@ -106,14 +106,14 @@ export class MealPackagesService {
     const pkg = await this._ownPackage(userId, packageId);
     Object.assign(pkg, dto);
     const saved = await this.packageRepo.save(pkg);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
   async deletePackage(userId: string, packageId: string): Promise<void> {
     const pkg = await this._ownPackage(userId, packageId);
     await this.packageRepo.remove(pkg);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
   }
 
   // ─── CATEGORIES ──────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ export class MealPackagesService {
     });
 
     const saved = await this.categoryRepo.save(cat);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -153,7 +153,7 @@ export class MealPackagesService {
     if (!cat) throw new NotFoundException('Category not found');
     Object.assign(cat, dto);
     const saved = await this.categoryRepo.save(cat);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -168,7 +168,7 @@ export class MealPackagesService {
     });
     if (!cat) throw new NotFoundException('Category not found');
     await this.categoryRepo.remove(cat);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
   }
 
   // ─── DISHES ──────────────────────────────────────────────────────────────
@@ -186,7 +186,7 @@ export class MealPackagesService {
     if (!cat) throw new NotFoundException('Category not found');
     const dish = this.dishRepo.create({ ...dto, category_id: categoryId });
     const saved = await this.dishRepo.save(dish);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -204,7 +204,7 @@ export class MealPackagesService {
     if (!dish) throw new NotFoundException('Dish not found');
     Object.assign(dish, dto);
     const saved = await this.dishRepo.save(dish);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -220,7 +220,7 @@ export class MealPackagesService {
     });
     if (!dish) throw new NotFoundException('Dish not found');
     await this.dishRepo.remove(dish);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
   }
 
   // ─── ADD-ONS ─────────────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ export class MealPackagesService {
     const pkg = await this._ownPackage(userId, packageId);
     const addon = this.addonRepo.create({ ...dto, package_id: packageId });
     const saved = await this.addonRepo.save(addon);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -250,7 +250,7 @@ export class MealPackagesService {
     if (!addon) throw new NotFoundException('Add-on not found');
     Object.assign(addon, dto);
     const saved = await this.addonRepo.save(addon);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
     return saved;
   }
 
@@ -265,7 +265,7 @@ export class MealPackagesService {
     });
     if (!addon) throw new NotFoundException('Add-on not found');
     await this.addonRepo.remove(addon);
-    this._invalidateCookCache(pkg.cook_id).catch(() => undefined);
+    this._invalidateCookCache(pkg.cook_id).catch((): void => undefined);
   }
 
   // ─── PUBLIC ──────────────────────────────────────────────────────────────

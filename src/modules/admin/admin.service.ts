@@ -378,7 +378,7 @@ export class AdminService {
       }
 
       // Newly-verified chef now appears in /cooks listing — bust caches.
-      this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
+      this.cooksService.invalidatePublicCache(cookId).catch((): void => undefined);
 
       return { message: 'Cook verified successfully', cook };
     } else {
@@ -407,7 +407,7 @@ export class AdminService {
       }
 
       // Rejected chef must drop out of /cooks listing too.
-      this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
+      this.cooksService.invalidatePublicCache(cookId).catch((): void => undefined);
 
       return { message: 'Cook verification rejected', cook };
     }
@@ -454,7 +454,7 @@ export class AdminService {
     }
 
     // Bust public chef-listing cache.
-    this.cooksService.invalidatePublicCache(cookId).catch(() => undefined);
+    this.cooksService.invalidatePublicCache(cookId).catch((): void => undefined);
 
     return { message: `Cook profile deleted, user "${cook.user?.name}" reverted to regular user` };
   }
@@ -761,7 +761,7 @@ export class AdminService {
         ip_address: meta.ip,
         user_agent: meta.userAgent,
       })
-      .catch(() => undefined);
+      .catch((): void => undefined);
 
     await this.audit(
       admin || null,

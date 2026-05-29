@@ -154,7 +154,7 @@ export class AreasService {
     await this.requestsRepo.save(req);
 
     // New active area went live — bust the public listing cache.
-    this.invalidateCache().catch(() => undefined);
+    this.invalidateCache().catch((): void => undefined);
 
     return { area: savedArea, request: req };
   }
