@@ -69,6 +69,26 @@ export class CooksService {
       throw new BadRequestException('Cook profile already exists');
     }
 
+    // Refuse to demote an admin to cook. The endpoint is the
+    // self-onboarding flow for users who want to become chefs — it
+    // legitimately mutates `users.role` from USER → COOK. But without
+    // this guard, an admin who hit the endpoint (intentionally or
+    // accidentally) would lose their admin powers, since `role` is a
+    // single-value enum (USER | COOK | ADMIN) and the update below
+    // would overwrite it.
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'role'],
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.role === UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Admin accounts cannot create a cook profile. Use a separate user account if you need to be a chef.',
+      );
+    }
+
     await this.usersRepository.update(userId, { role: UserRole.COOK });
 
     const cook = this.cooksRepository.create({
