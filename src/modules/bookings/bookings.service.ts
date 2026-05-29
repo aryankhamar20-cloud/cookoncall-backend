@@ -409,6 +409,10 @@ export class BookingsService {
         customer?.name || 'A customer',
         {
           cookEmail: cook.user?.email || null,
+          // WhatsApp Phase 2 — chef booking-request approval template
+          // sends to this number when WHATSAPP_* env is configured.
+          // Skipped silently when the chef has no phone.
+          cookPhone: cook.user?.phone || null,
           chefName: cook.user?.name || 'Chef',
           scheduledAt: scheduledDate,
           address: dto.address,
@@ -576,6 +580,8 @@ export class BookingsService {
         customer?.name || 'A customer',
         {
           cookEmail: cook.user?.email || null,
+          // WhatsApp Phase 2 — see createPackageBooking for rationale.
+          cookPhone: cook.user?.phone || null,
           chefName: cook.user?.name || 'Chef',
           scheduledAt: scheduledDate,
           address: dto.address,
