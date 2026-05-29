@@ -19,7 +19,7 @@ import {
  *   - admin ad-hoc queries scoped to a (user_id, time-range) tuple
  *
  * Both are covered by the composite indexes declared in the SQL
- * migration (`migrations/2026_05_28_analytics_phase1.sql`). We keep
+ * migration (`migrations/legacy/2026_05_28_analytics_phase1.sql`). We keep
  * the index annotations here too so a fresh `synchronize: true` dev
  * environment ends up with the same shape.
  */
