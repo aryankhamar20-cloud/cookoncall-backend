@@ -71,7 +71,11 @@ export class BookingsController {
     const isAdmin = user.role === 'admin';
 
     if (!isUserOwner && !isCookOwner && !isAdmin) {
-      return { message: 'Not authorized to view this booking' };
+      // Used to return 200 with a benign message — that's both a
+      // UX bug (clients couldn't distinguish "no permission" from
+      // "success with no data") and an inconsistency with the
+      // `/receipt` endpoint below, which correctly throws 403.
+      throw new ForbiddenException('Not authorised to view this booking');
     }
 
     // Customer view strips internal-only fields like rejection_reason.
@@ -233,9 +237,29 @@ export class BookingsController {
   //   <2h:    0% refund / chef ₹100
   @Get(':id/refund-estimate')
   async getRefundEstimate(
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const booking = await this.bookingsService.findById(id);
+    if (!booking) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    // Defense-in-depth: previously this route accepted any authenticated
+    // user. The estimate exposes total_price + policy text, which is
+    // booking-private data. Practical exploit was gated by UUID entropy
+    // (122 bits) but it was still a real privacy gap. Lock it down to
+    // the booking's customer / assigned cook / admin — same authz
+    // rule used by /receipt and /:id above.
+    const isUserOwner = booking.user_id === user.id;
+    const isCookOwner = booking.cook?.user_id === user.id;
+    const isAdmin = user.role === 'admin';
+    if (!isUserOwner && !isCookOwner && !isAdmin) {
+      throw new ForbiddenException(
+        'Not authorised to view this booking',
+      );
+    }
+
     const { refund, chefCompensation } =
       this.bookingsService.getCancellationRefund(booking);
     const hoursUntil =
