@@ -48,7 +48,7 @@ export class NotificationBroadcast {
   sent_by_admin_id: string | null;
 
   @Column({ length: 100, nullable: true })
-  sent_by_admin_name: string;
+  sent_by_admin_name: string | null;
 
   /** Number of users matched by the audience filter. */
   @Column({ type: 'int', default: 0 })

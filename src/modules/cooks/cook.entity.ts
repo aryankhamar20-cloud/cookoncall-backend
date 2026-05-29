@@ -41,19 +41,19 @@ export class Cook {
   user: User;
 
   @Column({ type: 'text', nullable: true })
-  bio: string;
+  bio: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  city: string;
+  city: string | null;
 
   @Column({ type: 'varchar', length: 10, nullable: true })
-  pincode: string;
+  pincode: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  latitude: number;
+  latitude: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  longitude: number;
+  longitude: number | null;
 
   @Column({ type: 'text', array: true, default: '{}' })
   cuisines: string[];
@@ -122,23 +122,23 @@ export class Cook {
 
   // ─── VERIFICATION DOCUMENTS ──────────────────────────
   @Column({ nullable: true })
-  aadhaar_url: string;
+  aadhaar_url: string | null;
 
   @Column({ nullable: true })
-  pan_url: string;
+  pan_url: string | null;
 
   @Column({ nullable: true })
-  address_proof_url: string;
+  address_proof_url: string | null;
 
   @Column({ nullable: true })
-  fssai_url: string;
+  fssai_url: string | null;
 
   // ─── EMERGENCY CONTACT ───────────────────────────────
   @Column({ type: 'varchar', length: 100, nullable: true })
-  emergency_contact_name: string;
+  emergency_contact_name: string | null;
 
   @Column({ type: 'varchar', length: 15, nullable: true })
-  emergency_contact_phone: string;
+  emergency_contact_phone: string | null;
 
   // ─── VERIFICATION STATUS ─────────────────────────────
   @Column({
@@ -149,33 +149,33 @@ export class Cook {
   verification_status: VerificationStatus;
 
   @Column({ type: 'text', nullable: true })
-  verification_rejection_reason: string;
+  verification_rejection_reason: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  verified_at: Date;
+  verified_at: Date | null;
 
   // ─── BANK DETAILS ────────────────────────────────────
   @Column({ nullable: true })
-  bank_account_number: string;
+  bank_account_number: string | null;
 
   @Column({ nullable: true })
-  bank_ifsc: string;
+  bank_ifsc: string | null;
 
   @Column({ nullable: true })
-  bank_name: string;
+  bank_name: string | null;
 
   @Column({ nullable: true })
-  razorpay_contact_id: string;
+  razorpay_contact_id: string | null;
 
   @Column({ nullable: true })
-  razorpay_fund_account_id: string;
+  razorpay_fund_account_id: string | null;
 
   // ─── TERMS ACCEPTANCE ────────────────────────────────
   @Column({ default: false })
   terms_accepted: boolean;
 
   @Column({ type: 'timestamptz', nullable: true })
-  terms_accepted_at: Date;
+  terms_accepted_at: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

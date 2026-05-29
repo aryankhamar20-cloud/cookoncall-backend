@@ -29,14 +29,14 @@ export class PackageCategoryDish {
   name: string;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   // Reuses DishType enum from menu-item (veg | non_veg)
   @Column({ type: 'enum', enum: DishType, default: DishType.VEG })
   type: DishType;
 
   @Column({ nullable: true })
-  image: string;
+  image: string | null;
 
   @Column({ type: 'int', default: 0 })
   sort_order: number;

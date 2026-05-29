@@ -48,10 +48,10 @@ export class MenuItem {
   category: DishCategory;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   @Column({ nullable: true })
-  image: string;
+  image: string | null;
 
   @Column({ default: true })
   is_available: boolean;

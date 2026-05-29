@@ -22,7 +22,7 @@ export class PromoCodeUsage {
   user_id: string;
 
   @Column({ nullable: true })
-  booking_id: string;
+  booking_id: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   discount_applied: number;

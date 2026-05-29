@@ -35,7 +35,7 @@ export class Referral {
   referee_reward: number;     // discount given to referred user on first booking
 
   @Column({ nullable: true })
-  rewarded_booking_id: string;
+  rewarded_booking_id: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
