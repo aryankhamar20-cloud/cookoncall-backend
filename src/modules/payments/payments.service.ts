@@ -95,14 +95,20 @@ export class PaymentsService {
         },
       });
     } catch (error) {
+      // Razorpay SDK throws errors with shape { statusCode, error: { code, description, source } }.
+      // They aren't always Error instances, so narrow defensively.
+      const err = error as {
+        message?: string;
+        statusCode?: number;
+        error?: { description?: string; code?: string };
+      };
+      const msg = err?.message ?? JSON.stringify(error);
+      this.logger.error(`Razorpay order creation failed: ${msg}`);
       this.logger.error(
-        `Razorpay order creation failed: ${error?.message || JSON.stringify(error)}`,
-      );
-      this.logger.error(
-        `Razorpay error details: statusCode=${error?.statusCode}, error=${JSON.stringify(error?.error)}`,
+        `Razorpay error details: statusCode=${err?.statusCode}, error=${JSON.stringify(err?.error)}`,
       );
       throw new BadRequestException(
-        `Payment gateway error: ${error?.error?.description || error?.message || 'Unknown error'}`,
+        `Payment gateway error: ${err?.error?.description ?? err?.message ?? 'Unknown error'}`,
       );
     }
 
@@ -191,7 +197,8 @@ export class PaymentsService {
     } catch (err) {
       // If Razorpay fetch itself fails (network, etc) we still honor signature
       // to avoid blocking legit captures, but log it.
-      this.logger.warn(`Razorpay fetch failed for ${dto.razorpay_payment_id}: ${err?.message || err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Razorpay fetch failed for ${dto.razorpay_payment_id}: ${msg}`);
     }
 
     // Mark payment captured

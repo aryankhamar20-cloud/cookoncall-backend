@@ -266,7 +266,8 @@ export class NotificationsService {
         this.logger.error(`Brevo email error (${response.status}): ${JSON.stringify(result)}`);
       }
     } catch (err) {
-      this.logger.error(`Brevo email failed for ${to}: ${err?.message || err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Brevo email failed for ${to}: ${msg}`);
     }
   }
 
