@@ -52,7 +52,7 @@ Status legend:
 | Customer — search/book/profile | ✅ | ✅ | ✅ | |
 | Customer — addresses CRUD | ✅ | ✅ | ✅ | |
 | Customer — areas list | ✅ | ✅ | ✅ | |
-| Customer — promo-code redeem | ✅ | 🚫 | 🚫 | **Backend has it; neither client uses it.** Originally listed as a Flutter gap — wrong. The booking DTO doesn't even accept a promo code yet. This is a feature that needs full-stack work, not a parity fix. |
+| Customer — promo-code redeem | ✅ + booking integration | 🚫 | 🚫 | **Backend now wires promo into `CreateBookingDto` + `bookings.service` (this PR).** Validate-only `POST /promo-codes/validate` was always there but had no consumer; now `POST /bookings` accepts an optional `promo_code` field, applies the discount atomically with the booking save (transaction-wrapped with `recordUsage`), and snapshots the redemption on the booking row. **Clients still need to add the input UX** — see ~~G3~~ below for the remaining client-side work. |
 | Referral system — share my code | ✅ | 🚫 | ✅ | Flutter calls `/referrals/my-code`; web does **not** consume any referral endpoint |
 | Referral system — apply someone else's | ✅ | 🚫 | 🚫 | Originally claimed as a "Flutter referral half-implemented" gap; in fact web has nothing referral-related either |
 | Earnings — totals | ✅ | ✅ | ✅ | |
@@ -88,7 +88,7 @@ The Flutter `cook_service_area_screen.dart` exists (286 lines of UI) but doesn't
 | ID | Item | Verified state | What's actually needed |
 |---|---|---|---|
 | ~~G1~~ | Phone-OTP login | Backend has `POST /auth/send-otp` + `verify-otp` (`@Public`), but **neither web nor Flutter consumes them**. Web only uses email OTP. | Pick a client (or both), wire the SMS-OTP UX. Not a parity-closing PR. |
-| ~~G3~~ | Customer promo-code redeem | Backend has `POST /promo-codes/validate` (any auth user), but `CreateBookingDto` has **zero promo fields** and `bookings.service.createBooking` never references promos. **No client uses validate either.** Web's `BookingModal.tsx` has zero promo references. | Full-stack feature: extend `CreateBookingDto`, plumb discount through bookings.service, **then** wire either client. |
+| ~~G3~~ | Customer promo-code redeem | **Backend half-shipped.** `CreateBookingDto` now accepts `promo_code`, `bookings.service.createBooking` validates + applies + records the redemption atomically, three new columns on `bookings` (`promo_code_id`, `promo_code_snapshot`, `promo_discount`) snapshot the redemption. Migration `1747500000000-AddPromoCodeToBookings` ships with the change. **Clients still don't have the UX** — neither web nor Flutter has a "promo code" input on the booking flow. | Add the input + "Apply" button to web `BookingModal.tsx` (calls `POST /promo-codes/validate` for live preview, then includes `promo_code` in `POST /bookings`). Mirror in Flutter. |
 | ~~G5~~ | Referral `/apply` | Backend has it. Flutter calls `/referrals/my-code` but not `/apply`. **Web has zero referral consumers** — no my-code, no apply. So Flutter is actually *ahead* of web on referrals. | Decide product intent (web parity, or just Flutter loop completion), then wire. |
 
 These are real feature gaps but they need to be discussed as **product features**, not classified as "Flutter falling behind web."

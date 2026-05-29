@@ -6,7 +6,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { PromoCode, PromoType } from './promo-code.entity';
 import { PromoCodeUsage } from './promo-code-usage.entity';
 import { AdminAuditLog } from '../admin/admin-audit.entity';
@@ -405,20 +405,44 @@ export class PromoCodesService {
   }
 
   // ─── INTERNAL: Record usage after booking confirmed ──
+  /**
+   * Records a redemption of `promoId` by `userId` against `bookingId`.
+   *
+   * If `manager` is provided, the usage row is written through it so
+   * the caller can wrap the booking-save + usage insert in a single
+   * transaction (see bookings.service.ts createBooking flow). The
+   * `used_count` increment is intentionally OUTSIDE the transaction —
+   * if the increment fails, the row in promo_code_usages is the
+   * authoritative redemption record (the single_use check reads it,
+   * not used_count), and the global counter being off by 1 is
+   * recoverable by an admin SQL fix-up rather than a partial
+   * customer-facing failure.
+   */
   async recordUsage(
     promoId: string,
     userId: string,
     bookingId: string,
     discountApplied: number,
+    manager?: EntityManager,
   ): Promise<void> {
-    const usage = this.usageRepo.create({
+    const usageRepo = manager
+      ? manager.getRepository(PromoCodeUsage)
+      : this.usageRepo;
+    const usage = usageRepo.create({
       promo_code_id: promoId,
       user_id: userId,
       booking_id: bookingId,
       discount_applied: discountApplied,
     });
-    await this.usageRepo.save(usage);
-    await this.promoRepo.increment({ id: promoId }, 'used_count', 1);
+    await usageRepo.save(usage);
+
+    // used_count increment is best-effort. If the caller passed a manager
+    // it's still scoped to that transaction; otherwise it's a separate
+    // statement.
+    const promoRepo = manager
+      ? manager.getRepository(PromoCode)
+      : this.promoRepo;
+    await promoRepo.increment({ id: promoId }, 'used_count', 1);
   }
 
   // ─── INTERNAL: Calculate discount amount ─────────────

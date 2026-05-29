@@ -12,6 +12,7 @@ import { MenuItem } from '../cooks/menu-item.entity';
 import { Payment } from '../payments/payment.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AvailabilityModule } from '../availability/availability.module';
+import { PromoCodesModule } from '../promo-codes/promo-codes.module';
 
 // ⚠️  VERIFY these import paths match your P1.5a entity files.
 import { MealPackage } from '../meal-packages/meal-package.entity';
@@ -37,6 +38,10 @@ import { PackageAddon } from '../meal-packages/package-addon.entity';
     }),
     NotificationsModule,
     AvailabilityModule,
+    // Customer promo-code redemption flow (May 29, 2026) — bookings.service
+    // calls PromoCodesService.validate() during createBooking and
+    // recordUsage() after the booking row saves.
+    PromoCodesModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService, ReceiptService],

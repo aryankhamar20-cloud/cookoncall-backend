@@ -172,6 +172,27 @@ export class Booking {
   @Column({ type: 'jsonb', nullable: true })
   selected_addons: Record<string, any>[] | null;
 
+  // ─── PROMO CODE REDEMPTION (May 29, 2026) ────────────
+  // Three columns capture "this booking had a promo applied":
+  //   promo_code_id        — FK-by-convention to promo_codes.id
+  //                          (no DB FK so deleting a promo doesn't
+  //                          orphan history)
+  //   promo_code_snapshot  — the literal code text at redemption time,
+  //                          survives even if the promo is later renamed
+  //                          or deleted (audit-friendly)
+  //   promo_discount       — actual ₹ amount subtracted from total_price.
+  //                          total_price is already the post-discount
+  //                          number, so total_price + promo_discount =
+  //                          subtotal + visit_fee + platform_fee.
+  @Column({ type: 'uuid', nullable: true })
+  promo_code_id: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  promo_code_snapshot: string | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  promo_discount: number | null;
+
   // Ingredient reminder sent flag — set to true after 2h-before email fires
   // so the cron doesn't double-send.
   @Column({ type: 'boolean', default: false })

@@ -22,6 +22,7 @@ import {
 import { NotificationsService } from '../notifications/notifications.service';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 import { AvailabilityService } from '../availability/availability.service';
+import { PromoCodesService } from '../promo-codes/promo-codes.service';
 
 // ⚠️  VERIFY these import paths match your actual P1.5a entity files.
 // If all 4 entities are in a single file, adjust accordingly.
@@ -106,6 +107,7 @@ export class BookingsService {
     private notificationsService: NotificationsService,
     private configService: ConfigService,
     private availabilityService: AvailabilityService,
+    private readonly promoCodesService: PromoCodesService,
     // Round 2 — used to wrap multi-write state transitions
     // (verifyEndOtp updates booking + cook in a single transaction).
     private readonly dataSource: DataSource,
@@ -138,6 +140,50 @@ export class BookingsService {
     );
 
     return basePrice + addonTotal;
+  }
+
+  /**
+   * If a `promo_code` was supplied with the create-booking request,
+   * validate it against the live promo state and return the discount
+   * to apply. Returns null when no code was supplied — booking flow
+   * proceeds unchanged.
+   *
+   * Why this lives in BookingsService and not PromoCodesService:
+   *   - PromoCodesService.validate() already handles all the rules
+   *     (active, not expired, not exhausted, single-use-not-yet-used,
+   *     min-order-amount). We just translate its response into the
+   *     three booking-row fields we need to persist.
+   *   - The promo-codes module shouldn't know what a Booking is.
+   *
+   * Failure shape: any rule violation surfaces as the BadRequestException
+   * thrown by validate() — same status + message the customer would see
+   * if they hit POST /promo-codes/validate first. The booking is never
+   * created in that case.
+   */
+  private async resolvePromoForBooking(
+    userId: string,
+    code: string | undefined,
+    grossTotal: number,
+  ): Promise<{
+    promoId: string;
+    promoSnapshot: string;
+    discount: number;
+  } | null> {
+    const trimmed = code?.trim();
+    if (!trimmed) return null;
+
+    const result = await this.promoCodesService.validate(userId, {
+      code: trimmed,
+      order_amount: grossTotal,
+    });
+
+    // validate() throws on every rejection path, so a returned object
+    // is always { valid: true, ... } with promo.id + promo.code present.
+    return {
+      promoId: result.promo.id as string,
+      promoSnapshot: result.promo.code as string,
+      discount: result.discount,
+    };
   }
 
   // ─── CREATE BOOKING ───────────────────────────────────
@@ -247,7 +293,19 @@ export class BookingsService {
     );
     const visitFee = resolvedVisit;
     const convFee = Math.round(pkgSubtotal * CONVENIENCE_RATE);
-    const totalPrice = pkgSubtotal + visitFee + convFee;
+    const grossTotal = pkgSubtotal + visitFee + convFee;
+
+    // Promo code (May 29, 2026): validate against the gross total. The
+    // server applies the discount AFTER pricing is finalized so the chef
+    // payout is computed against subtotal (unchanged) — promos come out
+    // of the platform's take, not the chef's.
+    const promo = await this.resolvePromoForBooking(
+      userId,
+      dto.promo_code,
+      grossTotal,
+    );
+    const promoDiscount = promo?.discount ?? 0;
+    const totalPrice = Math.max(0, grossTotal - promoDiscount);
 
     if (!chefServesArea && customerArea) {
       this.logger.warn(
@@ -311,9 +369,29 @@ export class BookingsService {
       selected_categories: selectedCategoriesData,
       selected_addons: selectedAddonsData,
       ingredient_reminder_sent: false,
+      // ─── Promo redemption snapshot (May 29, 2026) ─────
+      promo_code_id: promo?.promoId ?? null,
+      promo_code_snapshot: promo?.promoSnapshot ?? null,
+      promo_discount: promo ? promoDiscount : null,
     });
 
-    const saved: Booking = await this.bookingsRepository.save(booking);
+    // Save booking + record promo usage atomically. If the booking
+    // INSERT or the promo_code_usages INSERT fails, both roll back —
+    // we never want a discounted booking row without the matching
+    // usage row (single_use checks read the usage table directly).
+    const saved: Booking = await this.dataSource.transaction(async (manager) => {
+      const persisted = await manager.save(Booking, booking);
+      if (promo) {
+        await this.promoCodesService.recordUsage(
+          promo.promoId,
+          userId,
+          persisted.id,
+          promoDiscount,
+          manager,
+        );
+      }
+      return persisted;
+    });
 
     this.notificationsService
       .notifyBookingCreated(
@@ -412,7 +490,16 @@ export class BookingsService {
     const visitFee =
       bookingType === BookingType.HOME_COOKING ? resolvedVisit : 0;
     const convenienceFee = Math.round(subtotal * CONVENIENCE_RATE);
-    const totalPrice = subtotal + visitFee + convenienceFee;
+    const grossTotal = subtotal + visitFee + convenienceFee;
+
+    // Promo code (May 29, 2026) — see createPackageBooking for rationale.
+    const promo = await this.resolvePromoForBooking(
+      userId,
+      dto.promo_code,
+      grossTotal,
+    );
+    const promoDiscount = promo?.discount ?? 0;
+    const totalPrice = Math.max(0, grossTotal - promoDiscount);
 
     if (!chefServesArea && customerArea && bookingType === BookingType.HOME_COOKING) {
       this.logger.warn(
@@ -444,9 +531,27 @@ export class BookingsService {
       visit_fee: visitFee,
       platform_fee_percent: 2.5,
       is_package_booking: false,
+      // ─── Promo redemption snapshot (May 29, 2026) ─────
+      promo_code_id: promo?.promoId ?? null,
+      promo_code_snapshot: promo?.promoSnapshot ?? null,
+      promo_discount: promo ? promoDiscount : null,
     });
 
-    const saved: Booking = await this.bookingsRepository.save(booking);
+    // Atomic booking-save + promo usage write — see createPackageBooking
+    // for the rationale.
+    const saved: Booking = await this.dataSource.transaction(async (manager) => {
+      const persisted = await manager.save(Booking, booking);
+      if (promo) {
+        await this.promoCodesService.recordUsage(
+          promo.promoId,
+          userId,
+          persisted.id,
+          promoDiscount,
+          manager,
+        );
+      }
+      return persisted;
+    });
 
     this.notificationsService
       .notifyBookingCreated(userId, cook.user_id, saved.id, customer?.name || 'A customer')
