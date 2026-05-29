@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Query,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { PromoCodesService } from './promo-codes.service';
@@ -19,6 +20,8 @@ import {
 } from './dto/promo-code.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/user.entity';
 import { User } from '../users/user.entity';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
@@ -38,6 +41,11 @@ function auditMeta(req: Request): { ip: string | null; userAgent: string | null 
 @ApiTags('Promo Codes')
 @ApiBearerAuth('access-token')
 @Controller('promo-codes')
+// Without RolesGuard wired here, every @Roles(UserRole.ADMIN) decorator
+// below is just inert metadata — any authenticated user (incl. a regular
+// customer) could hit POST /promo-codes and mint themselves discount
+// codes. See PR adding this guard for context.
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class PromoCodesController {
   constructor(private readonly promoCodesService: PromoCodesService) {}
 

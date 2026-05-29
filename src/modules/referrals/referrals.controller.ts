@@ -1,7 +1,9 @@
-import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
 import { ReferralsService } from './referrals.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { User, UserRole } from '../users/user.entity';
 import { IsString, Length } from 'class-validator';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiProperty } from '@nestjs/swagger';
@@ -16,6 +18,10 @@ class ApplyReferralDto {
 @ApiTags('Referrals')
 @ApiBearerAuth('access-token')
 @Controller('referrals')
+// Without RolesGuard wired here, the @Roles(UserRole.ADMIN) on the
+// `/admin` route below is inert metadata — any authenticated user
+// could enumerate every user's referral relationships.
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class ReferralsController {
   constructor(private readonly referralsService: ReferralsService) {}
 
