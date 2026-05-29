@@ -36,10 +36,10 @@ export class Address {
   })
   label: AddressLabel;
 
-  @Column({ length: 100, nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   contact_name: string | null;
 
-  @Column({ length: 15, nullable: true })
+  @Column({ type: 'varchar', length: 15, nullable: true })
   contact_phone: string | null;
 
   @Column({ length: 100 })
@@ -48,7 +48,7 @@ export class Address {
   @Column({ length: 200 })
   street: string;
 
-  @Column({ length: 100, nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   landmark: string | null;
 
   @Column({ length: 100 })

@@ -69,7 +69,7 @@ export class AreaRequest {
   @Column({ length: 20, default: 'pending' })
   status: AreaRequestStatus;
 
-  @Column({ length: 50, nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   approved_slug: string | null;
 
   @Column({ type: 'text', nullable: true })

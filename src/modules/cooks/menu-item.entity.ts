@@ -50,7 +50,7 @@ export class MenuItem {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   image: string | null;
 
   @Column({ default: true })

@@ -26,7 +26,7 @@ export class User {
   @Column({ unique: true, length: 255 })
   email: string;
 
-  @Column({ length: 15, nullable: true })
+  @Column({ type: 'varchar', length: 15, nullable: true })
   phone: string | null;
 
   @Column({ default: false })
@@ -36,16 +36,16 @@ export class User {
   email_verified: boolean;
 
   @Exclude()
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   password: string | null;
 
   @Column({ type: 'enum', enum: UserRole, default: UserRole.USER })
   role: UserRole;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   avatar: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   google_id: string | null;
 
   // ─── ADDRESS & GEOLOCATION ─────────────────────────────
@@ -59,11 +59,11 @@ export class User {
   longitude: number | null;
 
   @Exclude()
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   refresh_token: string | null;
 
   @Exclude()
-  @Column({ nullable: true, length: 6 })
+  @Column({ type: 'varchar', nullable: true, length: 6 })
   otp: string | null;
 
   @Exclude()

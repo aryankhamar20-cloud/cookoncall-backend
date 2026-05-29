@@ -45,19 +45,19 @@ export class Payment {
   })
   status: PaymentStatus;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_order_id: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_payment_id: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_signature: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_transfer_id: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   refund_id: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })

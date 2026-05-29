@@ -121,16 +121,16 @@ export class Cook {
   booking_buffer_minutes: number;
 
   // ─── VERIFICATION DOCUMENTS ──────────────────────────
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   aadhaar_url: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   pan_url: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   address_proof_url: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   fssai_url: string | null;
 
   // ─── EMERGENCY CONTACT ───────────────────────────────
@@ -155,19 +155,19 @@ export class Cook {
   verified_at: Date | null;
 
   // ─── BANK DETAILS ────────────────────────────────────
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   bank_account_number: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   bank_ifsc: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   bank_name: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_contact_id: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   razorpay_fund_account_id: string | null;
 
   // ─── TERMS ACCEPTANCE ────────────────────────────────
