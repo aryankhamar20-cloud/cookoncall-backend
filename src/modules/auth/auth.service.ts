@@ -23,6 +23,7 @@ import {
   SendEmailOtpDto,
   VerifyEmailOtpDto,
 } from './dto/otp.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { RedisOtpLimiterService } from '../../common/services/redis-otp-limiter.service';
 
@@ -421,6 +422,63 @@ export class AuthService {
     await this.usersRepository.save(user);
 
     return { message: 'Password reset successful' };
+  }
+
+  // ─── CHANGE PASSWORD (logged-in self-service) ──────────
+  /**
+   * Distinct from resetPassword(): no OTP, no email loop. The caller
+   * is already authenticated (controller requires a valid JWT), and
+   * we re-verify ownership by checking the current password matches
+   * what's stored.
+   *
+   * Security notes:
+   *   - Constant-time string comparison via bcrypt.compare (built-in
+   *     to bcrypt; not affected by JS string-equality timing leaks).
+   *   - On success we invalidate the user's refresh_token so any
+   *     other active sessions (other devices, leaked tokens) lose
+   *     the ability to refresh and effectively expire within the
+   *     access-token window (15 min). The current session remains
+   *     usable until its access token expires; a paranoid admin can
+   *     log out manually after changing the password to fully wipe.
+   *   - The current and new password must differ — otherwise the
+   *     UI's "you've successfully changed your password" message
+   *     would be technically true but practically misleading.
+   *   - Rejects accounts without a stored password (Google-only
+   *     sign-ups). They should set a password via the forgot-password
+   *     flow first, which establishes one with email-OTP verification.
+   */
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      // Should be unreachable when the controller's JWT guard is
+      // wired, but failing safe.
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.password) {
+      throw new BadRequestException(
+        'No password is set on this account. Use the "Forgot password?" flow on the login page to set one.',
+      );
+    }
+
+    const isMatch = await bcrypt.compare(dto.current_password, user.password);
+    if (!isMatch) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    if (dto.current_password === dto.new_password) {
+      throw new BadRequestException(
+        'New password must differ from current password',
+      );
+    }
+
+    user.password = await bcrypt.hash(dto.new_password, 12);
+    // Invalidate refresh tokens on other sessions/devices — they
+    // can no longer refresh once their access token expires.
+    user.refresh_token = null;
+    await this.usersRepository.save(user);
+
+    return { message: 'Password changed successfully' };
   }
 
   // ─── REFRESH TOKEN ─────────────────────────────────────
