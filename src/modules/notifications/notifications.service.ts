@@ -8,7 +8,12 @@ import { Notification, NotificationType } from './notification.entity';
 import { User } from '../users/user.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
-import { CHEF_BOOKING_REQUEST } from '../whatsapp/templates';
+import {
+  CHEF_BOOKING_CONFIRMED,
+  CHEF_BOOKING_REQUEST,
+  CUSTOMER_BOOKING_CONFIRMED,
+  CUSTOMER_BOOKING_REJECTED,
+} from '../whatsapp/templates';
 
 @Injectable()
 export class NotificationsService {
@@ -482,6 +487,22 @@ export class NotificationsService {
     customerEmail: string | null,
     bookingId: string,
     chefName: string,
+    // WhatsApp Phase 4 (May 29, 2026) — when supplied, the customer
+    // and chef each receive a confirmation WhatsApp template after
+    // the chef's accept. Optional so legacy callers (none today)
+    // continue to work — when omitted, the in-app + email behaviour
+    // is byte-identical to pre-Phase-4.
+    whatsappDetails?: {
+      customerName: string;
+      customerPhone: string | null;
+      // Chef channel-pref gate uses this.
+      chefUserId: string;
+      chefPhone: string | null;
+      // Used to format the date_str / time_str template vars so
+      // both parties see the same booking time the customer saw at
+      // creation time. Pulled from the Booking row at the call site.
+      scheduledAt: Date;
+    },
   ) {
     const title = 'Booking confirmed';
     const message =
@@ -515,6 +536,84 @@ export class NotificationsService {
         this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
       }
     }
+
+    // ─── WhatsApp confirmations (Phase 4) ──────────────
+    // Two independent sends, each with its own gate:
+    //   1. Customer side — confirms the booking is live, mirrors the
+    //      branded email body's payment-optional-until-session-end
+    //      messaging in template form.
+    //   2. Chef side — keeps the chef's WhatsApp thread coherent.
+    //      WhatsApp quick-reply button taps don't auto-acknowledge in
+    //      the chat (the chef sees their own button tap and then
+    //      silence); CHEF_BOOKING_CONFIRMED is the visible "we got
+    //      your accept" receipt. Sent regardless of which channel
+    //      the chef accepted through (web, mobile, WhatsApp button)
+    //      so the thread always has the booking summary for reference.
+    //
+    // Failure on either branch is fire-and-forget — never blocks the
+    // booking flow.
+    if (whatsappDetails) {
+      const shortId = bookingId.slice(0, 8).toUpperCase();
+      const dateStr = whatsappDetails.scheduledAt.toLocaleDateString('en-IN', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const timeStr = whatsappDetails.scheduledAt.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const customerNameVar = this.sanitizeForWhatsAppVar(
+        whatsappDetails.customerName,
+        64,
+      );
+      const chefNameVar = this.sanitizeForWhatsAppVar(chefName, 64);
+      const dateVar = this.sanitizeForWhatsAppVar(dateStr, 80);
+      const timeVar = this.sanitizeForWhatsAppVar(timeStr, 32);
+
+      // 1. Customer-side WhatsApp.
+      if (
+        whatsappDetails.customerPhone &&
+        (await this._channelAllowed(customerUserId, 'whatsapp'))
+      ) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: whatsappDetails.customerPhone,
+            template: CUSTOMER_BOOKING_CONFIRMED,
+            vars: [customerNameVar, chefNameVar, dateVar, timeVar, shortId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `WhatsApp customer-confirmed failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+
+      // 2. Chef-side WhatsApp.
+      if (
+        whatsappDetails.chefPhone &&
+        (await this._channelAllowed(whatsappDetails.chefUserId, 'whatsapp'))
+      ) {
+        try {
+          await this.whatsapp.sendTemplate({
+            to: whatsappDetails.chefPhone,
+            template: CHEF_BOOKING_CONFIRMED,
+            vars: [chefNameVar, customerNameVar, dateVar, timeVar, shortId],
+            correlationId: bookingId,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `WhatsApp chef-confirmed failed for booking ${shortId}: ${
+              (err as Error).message
+            }`,
+          );
+        }
+      }
+    }
   }
 
   /** Legacy helper — kept for payments.service backward compatibility */
@@ -537,6 +636,15 @@ export class NotificationsService {
     customerEmail: string | null,
     bookingId: string,
     chefName: string,
+    // WhatsApp Phase 4 (May 29, 2026) — customer-side WhatsApp
+    // rejection notice. Chef side intentionally not notified here
+    // because their decline tap (or web-app button click) IS the
+    // confirmation; sending another WhatsApp message saying "you
+    // declined" would just clutter the thread.
+    whatsappDetails?: {
+      customerName: string;
+      customerPhone: string | null;
+    },
   ) {
     const title = 'Unable to confirm your booking';
     const message = `Unfortunately ${chefName} is unable to accept your booking. You can book another chef at no extra charge, or close this request.`;
@@ -560,6 +668,34 @@ export class NotificationsService {
       );
       if (await this._channelAllowed(customerUserId, 'email')) {
         this.sendDirectEmail(customerEmail, title, html).catch((): void => undefined);
+      }
+    }
+
+    // ─── Customer WhatsApp rejection (Phase 4) ─────────
+    // No reason exposed — same contract as the email above. Reason
+    // stays in `bookings.rejection_reason`, admin-only. The customer
+    // sees enough to know the booking didn't go through and that
+    // they can rebook elsewhere.
+    if (
+      whatsappDetails?.customerPhone &&
+      (await this._channelAllowed(customerUserId, 'whatsapp'))
+    ) {
+      try {
+        await this.whatsapp.sendTemplate({
+          to: whatsappDetails.customerPhone,
+          template: CUSTOMER_BOOKING_REJECTED,
+          vars: [
+            this.sanitizeForWhatsAppVar(whatsappDetails.customerName, 64),
+            this.sanitizeForWhatsAppVar(chefName, 64),
+          ],
+          correlationId: bookingId,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `WhatsApp customer-rejected failed for booking ${bookingId.slice(0, 8)}: ${
+            (err as Error).message
+          }`,
+        );
       }
     }
   }
