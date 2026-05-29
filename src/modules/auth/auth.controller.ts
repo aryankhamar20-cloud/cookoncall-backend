@@ -20,6 +20,7 @@ import {
   SendEmailOtpDto,
   VerifyEmailOtpDto,
 } from './dto/otp.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../users/user.entity';
@@ -115,6 +116,22 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  // ─── CHANGE PASSWORD (logged-in self-service) ─────────────────────────────
+  // Distinct from reset-password (which is the OTP-gated forgot flow).
+  // Requires a valid JWT (no @Public) AND the current password — see
+  // auth.service.changePassword() for the exact security posture.
+  // Throttled aggressively because this endpoint exposes a current-password
+  // oracle if the rate limit is too loose.
+  @Throttle({ strict: { ttl: 60000, limit: 5 } })
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @CurrentUser() user: User,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(user.id, dto);
   }
 
   // ─── REFRESH TOKEN ────────────────────────────────────────────────────────
