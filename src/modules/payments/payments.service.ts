@@ -157,6 +157,13 @@ export class PaymentsService {
 
     // Verify HMAC signature
     const secret = this.configService.get<string>('RAZORPAY_KEY_SECRET');
+    if (!secret) {
+      // Misconfigured environments must fail loud, not silently
+      // accept any signature. The auth controller's @Public()
+      // /payments/verify route would otherwise be exploitable.
+      this.logger.error('RAZORPAY_KEY_SECRET is not configured');
+      throw new BadRequestException('Payment verification is not configured');
+    }
     const body = dto.razorpay_order_id + '|' + dto.razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac('sha256', secret)
@@ -314,14 +321,28 @@ export class PaymentsService {
 
     const amountInPaise = Math.round(amount * 100);
 
+    if (!payment.razorpay_payment_id) {
+      // The CAPTURED-status filter on findOne() above means this is
+      // genuinely unexpected — a captured payment without a payment id
+      // would be data corruption. Fail loud rather than passing
+      // garbage to the SDK.
+      throw new BadRequestException(
+        'Captured payment is missing razorpay_payment_id; cannot refund',
+      );
+    }
+
     try {
-      const refund = await this.razorpay.payments.refund(
+      // The razorpay-node SDK's `refund()` overload returns
+      // `Promise<RazorpayRefund> | void` depending on whether a
+      // callback is passed. We don't pass one, so cast to the async
+      // overload's resolved type.
+      const refund = (await this.razorpay.payments.refund(
         payment.razorpay_payment_id,
         {
           amount: amountInPaise,
           notes: { booking_id: bookingId, reason: 'Cancellation refund' },
         },
-      );
+      )) as { id: string };
 
       payment.status = PaymentStatus.REFUNDED;
       payment.refund_id = refund.id;

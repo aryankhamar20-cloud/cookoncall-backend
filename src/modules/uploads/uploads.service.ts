@@ -61,8 +61,13 @@ export class UploadsService {
               eager_async: true,
             },
             (error, result) => {
-              if (error) reject(error);
-              else resolve(result);
+              if (error) return reject(error);
+              if (!result) {
+                return reject(
+                  new Error('Cloudinary upload returned no result'),
+                );
+              }
+              resolve(result);
             },
           )
           .end(file.buffer);
