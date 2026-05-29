@@ -369,15 +369,28 @@ export class NotificationsService {
     }
   }
 
-  /** Chef accepted → notify customer (pay within 3 hours) */
+  /**
+   * Chef accepted → notify customer.
+   *
+   * New flow (May 29, 2026): chef accept goes straight to CONFIRMED
+   * (no separate AWAITING_PAYMENT step / 3-hour payment window). Payment
+   * is optional any time before the chef closes the session via the
+   * end-OTP — see bookings.service.verifyEndOtp for the gate.
+   *
+   * Copy was previously "Please complete payment within 3 hours to
+   * confirm." That's wrong now: the booking is already confirmed and
+   * the customer has until session-end to pay.
+   */
   async notifyChefAccepted(
     customerUserId: string,
     customerEmail: string | null,
     bookingId: string,
     chefName: string,
   ) {
-    const title = 'Chef accepted — please pay to confirm';
-    const message = `${chefName} accepted your booking! Please complete payment within 3 hours to confirm. If you already paid, please ignore this message.`;
+    const title = 'Booking confirmed';
+    const message =
+      `${chefName} accepted your booking — you're all set! ` +
+      `Payment is optional now and due any time before your session ends.`;
     await this.create(
       customerUserId,
       NotificationType.BOOKING_CHEF_ACCEPTED,
@@ -388,12 +401,17 @@ export class NotificationsService {
 
     if (customerEmail) {
       const html = this.wrapBrandedHtml(
-        'Chef accepted your booking!',
+        'Your booking is confirmed!',
         `<p style="color:#5D4E37;font-size:14px;line-height:1.6;">
-          <strong>${chefName}</strong> accepted your booking request. Please complete your payment within <strong>3 hours</strong> to confirm the booking.
+          <strong>${chefName}</strong> accepted your booking. You're all set.
         </p>
         <p style="color:#8B7355;font-size:13px;line-height:1.6;">
-          Open the CookOnCall app → Orders → Pay Now.<br/>
+          <strong>Payment is optional</strong> until your session ends — you can pay any time
+          from the CookOnCall app under <em>Orders &rarr; Pay</em>. The chef will not be
+          able to mark the session complete until payment is captured, so make sure
+          to pay before they finish cooking.
+        </p>
+        <p style="color:#8B7355;font-size:13px;line-height:1.6;">
           <em>If you already paid, please ignore this email.</em>
         </p>`,
       );
@@ -464,7 +482,12 @@ export class NotificationsService {
     const message =
       who === 'chef'
         ? 'A booking request expired because you did not respond within 3 hours.'
-        : 'Your booking expired because payment was not completed within 3 hours.';
+        // Customer-side expiry: under the new flow this is reachable
+        // only for legacy bookings still stuck in AWAITING_PAYMENT (old
+        // flow's 3-hour payment window). New CONFIRMED bookings don't
+        // auto-expire by payment timer.
+        : 'Your booking expired before it could be confirmed. ' +
+          'You can book another chef at no extra charge.';
     await this.create(
       recipientUserId,
       NotificationType.BOOKING_EXPIRED,

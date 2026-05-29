@@ -34,9 +34,17 @@ export class PaymentsService {
   }
 
   // ─── CREATE RAZORPAY ORDER ────────────────────────────
-  // NEW FLOW: payment can only be initiated for bookings in AWAITING_PAYMENT.
-  // Legacy rows still in PENDING are tolerated to keep old bookings payable,
-  // but all new bookings must come via the accept flow.
+  // New flow (May 29, 2026): payment is OPTIONAL between chef-accept and
+  // session-end. Customer can pay any time the booking is in CONFIRMED
+  // (the post-accept state) or even IN_PROGRESS (chef started cooking
+  // but customer hasn't paid yet — still allowed; verifyEndOtp blocks
+  // session COMPLETED until payment is captured).
+  //
+  // Legacy AWAITING_PAYMENT and PENDING values stay payable for any
+  // pre-deployment rows that haven't finished yet. The 3-hour
+  // payment-window expiry has been removed from acceptBooking; existing
+  // rows in AWAITING_PAYMENT can still be paid via the same Razorpay
+  // path and will flip to CONFIRMED on capture (handled below).
   async createOrder(userId: string, dto: CreateOrderDto) {
     const booking = await this.bookingsRepository.findOne({
       where: { id: dto.booking_id, user_id: userId },
@@ -48,22 +56,15 @@ export class PaymentsService {
     }
 
     const payableStatuses = [
-      BookingStatus.AWAITING_PAYMENT,
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+      BookingStatus.AWAITING_PAYMENT, // legacy
       BookingStatus.PENDING, // legacy
     ];
     if (!payableStatuses.includes(booking.status)) {
       throw new BadRequestException(
         `This booking cannot be paid right now (status: ${booking.status})`,
       );
-    }
-
-    // Reject expired AWAITING_PAYMENT bookings (3h payment window)
-    if (booking.status === BookingStatus.AWAITING_PAYMENT && booking.payment_expires_at) {
-      if (new Date() > new Date(booking.payment_expires_at)) {
-        throw new BadRequestException(
-          'Your 3-hour payment window has expired. Please book again.',
-        );
-      }
     }
 
     const amount = Number(booking.total_price);
@@ -217,7 +218,11 @@ export class PaymentsService {
       throw new NotFoundException('Booking not found');
     }
 
-    // Only flip if not already confirmed/in-progress/completed
+    // Only flip if not already confirmed/in-progress/completed.
+    // Under the new flow (May 29, 2026) most bookings are already
+    // CONFIRMED at the time of payment — chef-accept now goes straight
+    // there without a separate AWAITING_PAYMENT stage. AWAITING_PAYMENT
+    // is kept here for legacy rows that were created before the cutover.
     const flippableFrom = [
       BookingStatus.AWAITING_PAYMENT,
       BookingStatus.PENDING, // legacy
@@ -227,7 +232,8 @@ export class PaymentsService {
       booking.confirmed_at = new Date();
       await this.bookingsRepository.save(booking);
 
-      // Notify customer + chef
+      // Notify customer + chef on the actual state flip — only legacy
+      // rows go down this path now.
       this.notificationsService
         .notifyBookingConfirmed(
           booking.user_id,
@@ -235,6 +241,19 @@ export class PaymentsService {
           booking.cook?.user?.name || 'Your chef',
         )
         .catch((): void => undefined);
+      if (booking.cook?.user_id) {
+        this.notificationsService
+          .notifyPaymentReceived(booking.cook.user_id, Number(payment.amount))
+          .catch((): void => undefined);
+      }
+    } else if (
+      booking.status === BookingStatus.CONFIRMED ||
+      booking.status === BookingStatus.IN_PROGRESS
+    ) {
+      // New-flow case: booking was already CONFIRMED (or even IN_PROGRESS
+      // if the customer paid mid-session) before the customer paid. No
+      // status flip; just notify the chef that the money landed so they
+      // can close out the session via verifyEndOtp.
       if (booking.cook?.user_id) {
         this.notificationsService
           .notifyPaymentReceived(booking.cook.user_id, Number(payment.amount))
