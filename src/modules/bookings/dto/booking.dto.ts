@@ -195,6 +195,12 @@ export class RebookDto {
   instructions?: string;
 }
 
+// ─── Customer reschedules a confirmed/pending booking ───
+export class RescheduleBookingDto {
+  @IsDateString()
+  scheduled_at: string;
+}
+
 export class GetBookingsDto {
   @IsOptional()
   @IsEnum(BookingStatus)

@@ -25,6 +25,7 @@ import {
   UpdateBookingStatusDto,
   RejectBookingDto,
   RebookDto,
+  RescheduleBookingDto,
 } from './dto/booking.dto';
 import { BookingStatus } from './booking.entity';
 
@@ -41,6 +42,16 @@ export class BookingsController {
     @Body() dto: CreateBookingDto,
   ) {
     return this.bookingsService.createBooking(user.id, dto);
+  }
+
+  // Customer reschedules their booking to a new time (web + app).
+  @Patch(':id/reschedule')
+  async reschedule(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RescheduleBookingDto,
+  ) {
+    return this.bookingsService.reschedule(id, user.id, dto.scheduled_at);
   }
 
   @Get()

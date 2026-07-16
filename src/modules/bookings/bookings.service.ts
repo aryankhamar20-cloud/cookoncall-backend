@@ -964,6 +964,41 @@ export class BookingsService {
   }
 
   // ─── UPDATE BOOKING STATUS ────────────────────────────
+  /**
+   * Customer reschedules their booking to a new time. Allowed while the
+   * booking is still pending chef approval or confirmed (not started).
+   * New time must be at least 2 hours out (mirrors the cancellation
+   * policy floor). Shared by web + app.
+   */
+  async reschedule(bookingId: string, userId: string, newScheduledAt: string) {
+    const booking = await this.findById(bookingId);
+    if (booking.user_id !== userId) {
+      throw new ForbiddenException('Not authorized to reschedule this booking');
+    }
+    const reschedulable = [
+      BookingStatus.PENDING_CHEF_APPROVAL,
+      BookingStatus.PENDING,
+      BookingStatus.CONFIRMED,
+    ];
+    if (!reschedulable.includes(booking.status)) {
+      throw new BadRequestException(
+        'This booking can no longer be rescheduled.',
+      );
+    }
+    const newDate = new Date(newScheduledAt);
+    if (
+      isNaN(newDate.getTime()) ||
+      newDate.getTime() <= Date.now() + 2 * 60 * 60 * 1000
+    ) {
+      throw new BadRequestException(
+        'New time must be at least 2 hours from now.',
+      );
+    }
+    booking.scheduled_at = newDate;
+    await this.bookingsRepository.save(booking);
+    return this.findById(bookingId);
+  }
+
   async updateStatus(
     bookingId: string,
     userId: string,
