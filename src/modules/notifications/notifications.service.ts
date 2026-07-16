@@ -294,6 +294,55 @@ export class NotificationsService {
     }
   }
 
+  // ─── DIRECT BREVO EMAIL WITH PDF ATTACHMENT ──────────────────
+  // Used to email an invoice/receipt PDF. Brevo accepts base64 file
+  // content via the `attachment` field (HTTPS, so it works on Railway
+  // where SMTP is blocked). Returns true on success so callers can tell
+  // the user whether the email actually went out.
+  async sendEmailWithAttachment(
+    to: string,
+    subject: string,
+    html: string,
+    attachment: { name: string; content: Buffer },
+  ): Promise<boolean> {
+    if (!this.brevoApiKey || !to) {
+      this.logger.warn(
+        `BREVO_API_KEY missing or no recipient — skipping invoice email to ${to}`,
+      );
+      return false;
+    }
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': this.brevoApiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: 'CookOnCall', email: 'support@thecookoncall.com' },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+          attachment: [
+            { name: attachment.name, content: attachment.content.toString('base64') },
+          ],
+        }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        this.logger.error(
+          `Brevo attachment email error (${response.status}): ${JSON.stringify(result)}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Brevo attachment email failed for ${to}: ${msg}`);
+      return false;
+    }
+  }
+
   // ═══════════════════════════════════════════════════════
   // BOOKING NOTIFICATION HELPERS
   // ═══════════════════════════════════════════════════════

@@ -4,8 +4,9 @@ import { Repository } from 'typeorm';
 import { Referral, ReferralStatus } from './referral.entity';
 import { User } from '../users/user.entity';
 
-// Reward amounts (in ₹)
-const REFERRER_REWARD = 50;  // referrer gets ₹50 after referred user's 1st booking
+// Reward amounts (in ₹). Keep these in sync with the customer-facing copy
+// on the app "Refer & Earn" screen and the web Refer & Earn panel.
+const REFERRER_REWARD = 100; // referrer earns ₹100 after referred user's 1st booking
 const REFEREE_DISCOUNT = 50; // referred user gets ₹50 off their 1st booking
 
 @Injectable()

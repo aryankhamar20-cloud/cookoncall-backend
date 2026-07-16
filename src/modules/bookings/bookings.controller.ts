@@ -12,11 +12,13 @@ import {
   Post,
   Query,
   Res,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BookingsService } from './bookings.service';
 import { ReceiptService } from './receipt.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../users/user.entity';
 import {
@@ -34,6 +36,7 @@ export class BookingsController {
   constructor(
     private readonly bookingsService: BookingsService,
     private readonly receiptService: ReceiptService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   @Post()
@@ -233,10 +236,86 @@ export class BookingsController {
     }
 
     const buf = await this.receiptService.generate(booking);
-    const fileName = `cookoncall-receipt-${booking.id.slice(0, 8)}.pdf`;
+    const fileName = this.receiptService.fileName(booking);
     res.set('Content-Disposition', `attachment; filename="${fileName}"`);
     res.set('Content-Length', String(buf.length));
     res.status(HttpStatus.OK).send(buf);
+  }
+
+  // ─── EMAIL THE INVOICE (P6.2) ─────────────────────────
+  /**
+   * Generates the invoice PDF and emails it to the booking's customer as
+   * an attachment (via Brevo). Same authorization + eligibility rules as
+   * the download endpoint. Returns the masked recipient so the client can
+   * confirm where it went.
+   */
+  @Post(':id/receipt/email')
+  async emailReceipt(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const booking = await this.bookingsService.findById(id);
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    const cook = booking.cook;
+    const isOwner =
+      booking.user_id === user.id ||
+      cook?.user_id === user.id ||
+      user.role === 'admin';
+    if (!isOwner) {
+      throw new ForbiddenException('Not authorised to email this invoice');
+    }
+
+    const eligible: BookingStatus[] = [
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+      BookingStatus.COMPLETED,
+      BookingStatus.PENDING, // legacy
+    ];
+    if (!eligible.includes(booking.status)) {
+      throw new ForbiddenException(
+        'Invoices are available only after the booking is paid / confirmed',
+      );
+    }
+
+    // Always deliver to the customer of record.
+    const recipient = booking.user?.email;
+    if (!recipient) {
+      throw new NotFoundException('No email address on file for this booking');
+    }
+
+    const buf = await this.receiptService.generate(booking);
+    const invoiceNo = this.receiptService.invoiceNumber(booking);
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;color:#3D2418;">
+        <h2 style="color:#E8520A;margin:0 0 8px;">Your CookOnCall invoice</h2>
+        <p style="font-size:14px;line-height:1.6;">
+          Hi ${booking.user?.name || 'there'},<br/>
+          Your invoice <strong>${invoiceNo}</strong> is attached as a PDF.
+          Thank you for using CookOnCall!
+        </p>
+        <p style="font-size:12px;color:#8B7355;">
+          Questions? Reply to this email or reach us at support@thecookoncall.com.
+        </p>
+      </div>`;
+
+    const sent = await this.notificationsService.sendEmailWithAttachment(
+      recipient,
+      `CookOnCall Invoice ${invoiceNo}`,
+      html,
+      { name: this.receiptService.fileName(booking), content: buf },
+    );
+
+    if (!sent) {
+      throw new ServiceUnavailableException(
+        'Email service is not configured or the send failed. Please try again later.',
+      );
+    }
+
+    // Mask the recipient (a***@domain) so the response doesn't leak the
+    // full address to a cook/admin who triggered it.
+    const masked = recipient.replace(/^(.).*(@.*)$/, '$1***$2');
+    return { message: `Invoice ${invoiceNo} emailed to ${masked}` };
   }
 
   // ─── CANCELLATION REFUND ESTIMATE ──────────────────────
