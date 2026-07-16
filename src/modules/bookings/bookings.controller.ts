@@ -16,6 +16,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { BookingsService } from './bookings.service';
 import { ReceiptService } from './receipt.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -250,6 +251,9 @@ export class BookingsController {
    * confirm where it went.
    */
   @Post(':id/receipt/email')
+  // Anti-abuse: prevents inbox spamming a customer and protects our Brevo
+  // send quota — 5 invoice emails per minute per IP is plenty.
+  @Throttle({ strict: { ttl: 60000, limit: 5 } })
   async emailReceipt(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,

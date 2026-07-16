@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ReferralsService } from './referrals.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -32,6 +33,8 @@ export class ReferralsController {
   }
 
   @Post('apply')
+  // Anti-enumeration: a signed-in user can't brute-force referral codes.
+  @Throttle({ strict: { ttl: 60000, limit: 10 } })
   @ApiOperation({ summary: 'Apply a referral code (call once after registration)' })
   async applyCode(
     @CurrentUser() user: User,
