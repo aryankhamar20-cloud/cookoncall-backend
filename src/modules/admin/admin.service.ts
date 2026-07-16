@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike } from 'typeorm';
+import { Repository, ILike, MoreThanOrEqual } from 'typeorm';
 import { User, UserRole } from '../users/user.entity';
 import { Cook, VerificationStatus } from '../cooks/cook.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
@@ -149,6 +149,132 @@ export class AdminService {
       completed_bookings: completedBookings,
       active_bookings: activeBookings,
       total_revenue: parseFloat(revenueResult?.revenue || '0'),
+    };
+  }
+
+  // ─── ADVANCED KPIs (food-tech marketplace) ────────────
+  // Read-only aggregate for the admin Analytics panel. No schema change:
+  // GMV from completed bookings, platform revenue from captured payments,
+  // liquidity/quality/supply/demand ratios derived in JS.
+  async getKpis() {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      totalBookings, completed, inProgress, confirmed, pendingApproval,
+      pendingLegacy, cancelledUser, cancelledCook, expired,
+    ] = await Promise.all([
+      this.bookingsRepository.count(),
+      this.bookingsRepository.count({ where: { status: BookingStatus.COMPLETED } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.IN_PROGRESS } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.CONFIRMED } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.PENDING_CHEF_APPROVAL } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.PENDING } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.CANCELLED_BY_USER } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.CANCELLED_BY_COOK } }),
+      this.bookingsRepository.count({ where: { status: BookingStatus.EXPIRED } }),
+    ]);
+
+    const [
+      totalCustomers, totalCooks, verifiedCooks, pendingCooks,
+      newCustomersThisMonth, newCooksThisMonth, totalReviews,
+    ] = await Promise.all([
+      this.usersRepository.count({ where: { role: UserRole.USER } }),
+      this.cooksRepository.count(),
+      this.cooksRepository.count({ where: { is_verified: true } }),
+      this.cooksRepository.count({ where: { verification_status: VerificationStatus.PENDING } }),
+      this.usersRepository.count({ where: { role: UserRole.USER, created_at: MoreThanOrEqual(monthStart) } }),
+      this.cooksRepository.count({ where: { created_at: MoreThanOrEqual(monthStart) } }),
+      this.reviewsRepository.count(),
+    ]);
+
+    const gmvRow = await this.bookingsRepository
+      .createQueryBuilder('b')
+      .select('COALESCE(SUM(b.total_price), 0)', 'gmv')
+      .where('b.status = :s', { s: BookingStatus.COMPLETED })
+      .getRawOne();
+    const revRow = await this.paymentsRepository
+      .createQueryBuilder('p')
+      .select('COALESCE(SUM(p.platform_fee), 0)', 'rev')
+      .where('p.status = :st', { st: PaymentStatus.CAPTURED })
+      .getRawOne();
+    const ratingRow = await this.reviewsRepository
+      .createQueryBuilder('r')
+      .select('COALESCE(AVG(r.rating), 0)', 'avg')
+      .getRawOne();
+
+    const gmv = parseFloat(gmvRow?.gmv || '0');
+    const platformRevenue = parseFloat(revRow?.rev || '0');
+    const cancelled = cancelledUser + cancelledCook;
+    const acceptanceRate = totalBookings > 0 ? Math.round((completed / totalBookings) * 100) : 0;
+    const cancellationRate = totalBookings > 0 ? Math.round((cancelled / totalBookings) * 100) : 0;
+    const aov = completed > 0 ? Math.round(gmv / completed) : 0;
+    const takeRate = gmv > 0 ? Math.round((platformRevenue / gmv) * 1000) / 10 : 0;
+
+    return {
+      revenue: {
+        gmv,
+        platform_revenue: platformRevenue,
+        aov,
+        take_rate_pct: takeRate,
+      },
+      bookings: {
+        total: totalBookings,
+        completed,
+        in_progress: inProgress,
+        confirmed,
+        pending: pendingApproval + pendingLegacy,
+        cancelled_by_user: cancelledUser,
+        cancelled_by_cook: cancelledCook,
+        expired,
+        acceptance_rate_pct: acceptanceRate,
+        cancellation_rate_pct: cancellationRate,
+      },
+      supply: {
+        total_cooks: totalCooks,
+        verified_cooks: verifiedCooks,
+        pending_cooks: pendingCooks,
+        new_cooks_this_month: newCooksThisMonth,
+      },
+      demand: {
+        total_customers: totalCustomers,
+        new_customers_this_month: newCustomersThisMonth,
+      },
+      quality: {
+        avg_rating: Math.round(parseFloat(ratingRow?.avg || '0') * 10) / 10,
+        total_reviews: totalReviews,
+      },
+    };
+  }
+
+  // ─── REVIEWS MODERATION (read-only list) ──────────────
+  // Newest-first review list for the admin Reviews panel. Optional
+  // maxRating filter surfaces low-rated bookings (<= N) for follow-up.
+  async getReviews(page = 1, limit = 20, maxRating?: number) {
+    const skip = (page - 1) * limit;
+    const qb = this.reviewsRepository
+      .createQueryBuilder('r')
+      .leftJoinAndSelect('r.user', 'customer')
+      .leftJoinAndSelect('r.cook', 'cook')
+      .leftJoinAndSelect('cook.user', 'chef')
+      .orderBy('r.created_at', 'DESC')
+      .skip(skip)
+      .take(limit);
+    if (maxRating != null && !isNaN(maxRating)) {
+      qb.where('r.rating <= :maxRating', { maxRating });
+    }
+    const [reviews, total] = await qb.getManyAndCount();
+    return {
+      reviews: reviews.map((r) => ({
+        id: r.id,
+        rating: r.rating,
+        comment: r.comment,
+        created_at: r.created_at,
+        booking_id: r.booking_id,
+        customer_name: r.user?.name ?? null,
+        chef_name: r.cook?.user?.name ?? null,
+      })),
+      pagination: { page, limit, total, total_pages: Math.ceil(total / limit) },
     };
   }
 

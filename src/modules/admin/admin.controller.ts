@@ -44,6 +44,26 @@ export class AdminController {
     return this.adminService.getStats();
   }
 
+  // Advanced food-tech KPIs for the Analytics panel (read-only).
+  @Get('analytics/kpis')
+  async getKpis() {
+    return this.adminService.getKpis();
+  }
+
+  // Reviews moderation list (read-only; max_rating filters low ratings).
+  @Get('reviews')
+  async getReviews(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('max_rating') maxRating?: string,
+  ) {
+    return this.adminService.getReviews(
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 20,
+      maxRating ? Number(maxRating) : undefined,
+    );
+  }
+
   @Get('recent-users')
   async getRecentUsers() {
     return this.adminService.getRecentUsers();
