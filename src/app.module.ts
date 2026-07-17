@@ -28,6 +28,7 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { PayoutsModule } from './modules/payouts/payouts.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
@@ -86,6 +87,7 @@ import { CommonModule } from './common/common.module';
     ReviewsModule,
     FavoritesModule,
     PayoutsModule,
+    SubscriptionsModule,
     NotificationsModule,
     AdminModule,
     UploadsModule,
