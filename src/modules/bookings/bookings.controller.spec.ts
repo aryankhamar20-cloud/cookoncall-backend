@@ -26,6 +26,7 @@ import request from 'supertest';
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { ReceiptService } from './receipt.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { UserRole } from '../users/user.entity';
 import { BookingStatus } from './booking.entity';
 
@@ -83,6 +84,14 @@ describe('BookingsController defense-in-depth (PR #20)', () => {
     // Receipt isn't exercised by this spec but the controller depends
     // on the provider being injectable.
     generate: jest.fn(),
+    fileName: jest.fn(() => 'invoice.pdf'),
+    invoiceNumber: jest.fn(() => 'INV-TEST'),
+  };
+
+  // The controller gained a NotificationsService dependency (invoice email).
+  // Not exercised by these authz tests, but must be injectable.
+  const notificationsServiceMock = {
+    sendEmailWithAttachment: jest.fn(async () => true),
   };
 
   beforeAll(async () => {
@@ -91,6 +100,7 @@ describe('BookingsController defense-in-depth (PR #20)', () => {
       providers: [
         { provide: BookingsService, useValue: bookingsServiceMock },
         { provide: ReceiptService, useValue: receiptServiceMock },
+        { provide: NotificationsService, useValue: notificationsServiceMock },
       ],
     }).compile();
 
