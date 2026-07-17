@@ -30,17 +30,23 @@ export class SubscriptionsService {
   ) {}
 
   // ─── Date helpers ────────────────────────────────────────────
-  private startOfWeek(d: Date): number {
+  // Sessions are scheduled in IST (the market we serve). Railway runs the
+  // process in UTC, so we do all wall-clock maths in an "IST view" (shift
+  // by +5:30 and use UTC getters/setters), then subtract the offset to get
+  // the true UTC instant we persist.
+  private static readonly IST_OFFSET_MS = 330 * 60 * 1000;
+
+  private startOfWeekUtc(d: Date): number {
     const c = new Date(d);
-    c.setHours(0, 0, 0, 0);
-    c.setDate(c.getDate() - c.getDay()); // back to Sunday
+    c.setUTCHours(0, 0, 0, 0);
+    c.setUTCDate(c.getUTCDate() - c.getUTCDay()); // back to Sunday
     return c.getTime();
   }
 
   /**
    * Next datetime strictly after `after` that matches one of `days` at
-   * `time_slot`, honouring the cadence's week alignment relative to
-   * `started`. Returns null if nothing matches within 70 days.
+   * `time_slot` (interpreted in IST), honouring the cadence's week alignment
+   * relative to `started`. Returns null if nothing matches within 70 days.
    */
   private computeNextRunAt(
     after: Date,
@@ -52,17 +58,22 @@ export class SubscriptionsService {
     if (!days || days.length === 0) return null;
     const [hh, mm] = timeSlot.split(':').map((n) => parseInt(n, 10));
     const step = WEEKS_STEP[cadence] ?? 1;
-    const startWeek = this.startOfWeek(started);
+    const OFF = SubscriptionsService.IST_OFFSET_MS;
+
+    // Shift into the IST "view" so UTC getters/setters read IST wall-clock.
+    const afterIst = new Date(after.getTime() + OFF);
+    const startWeekIst = this.startOfWeekUtc(new Date((started ?? new Date()).getTime() + OFF));
 
     for (let i = 0; i <= 70; i++) {
-      const d = new Date(after);
-      d.setDate(d.getDate() + i);
-      d.setHours(hh || 0, mm || 0, 0, 0);
-      if (d <= after) continue;
-      if (!days.includes(d.getDay())) continue;
-      const weeks = Math.round((this.startOfWeek(d) - startWeek) / (7 * 86400000));
+      const dIst = new Date(afterIst);
+      dIst.setUTCDate(dIst.getUTCDate() + i);
+      dIst.setUTCHours(hh || 0, mm || 0, 0, 0);
+      if (dIst <= afterIst) continue;
+      if (!days.includes(dIst.getUTCDay())) continue;
+      const weeks = Math.round((this.startOfWeekUtc(dIst) - startWeekIst) / (7 * 86400000));
       if (weeks % step !== 0) continue;
-      return d;
+      // Back to the real UTC instant for storage.
+      return new Date(dIst.getTime() - OFF);
     }
     return null;
   }
