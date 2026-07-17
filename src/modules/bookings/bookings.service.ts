@@ -23,6 +23,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Payment, PaymentStatus } from '../payments/payment.entity';
 import { AvailabilityService } from '../availability/availability.service';
 import { PromoCodesService } from '../promo-codes/promo-codes.service';
+import { ReferralsService } from '../referrals/referrals.service';
 
 // ⚠️  VERIFY these import paths match your actual P1.5a entity files.
 // If all 4 entities are in a single file, adjust accordingly.
@@ -119,6 +120,8 @@ export class BookingsService {
     // Round 2 — used to wrap multi-write state transitions
     // (verifyEndOtp updates booking + cook in a single transaction).
     private readonly dataSource: DataSource,
+    // Referral rewards fire when a referred customer's first booking completes.
+    private readonly referralsService: ReferralsService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -1263,6 +1266,13 @@ export class BookingsService {
       await manager.save(Booking, booking);
       await manager.save(Cook, cook);
     });
+
+    // Referral reward: if this customer was referred, their referrer earns
+    // ₹100 wallet credit now that the first booking is complete. No-op for
+    // non-referred users or already-rewarded referrals. Fire-and-forget.
+    this.referralsService
+      .onFirstBookingCompleted(booking.user_id, bookingId)
+      .catch((err) => this.logger.warn(`Referral reward failed: ${err.message}`));
 
     this.notificationsService
       .notifySessionCompleted(

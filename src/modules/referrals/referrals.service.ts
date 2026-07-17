@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Referral, ReferralStatus } from './referral.entity';
 import { User } from '../users/user.entity';
+import { WalletService } from '../wallet/wallet.service';
+import { WalletTxnType } from '../wallet/wallet-transaction.entity';
 
 // Reward amounts (in ₹). Keep these in sync with the customer-facing copy
 // on the app "Refer & Earn" screen and the web Refer & Earn panel.
@@ -18,6 +20,7 @@ export class ReferralsService {
     private referralRepo: Repository<Referral>,
     @InjectRepository(User)
     private usersRepo: Repository<User>,
+    private readonly walletService: WalletService,
   ) {}
 
   // ─── Generate deterministic referral code from user ID ─
@@ -94,9 +97,28 @@ export class ReferralsService {
     });
 
     await this.referralRepo.save(referral);
-    this.logger.log(
-      `Referral recorded: ${referrer.id} → ${referredUserId}`,
-    );
+
+    // Deliver the referee's ₹50 immediately as spendable wallet credit
+    // (usable on any booking via pay-with-wallet). Best-effort: a wallet
+    // hiccup must not fail signup — the referral row is already saved.
+    try {
+      await this.walletService.credit(
+        referredUserId,
+        REFEREE_DISCOUNT,
+        WalletTxnType.REFEREE_DISCOUNT,
+        {
+          referenceType: 'referral',
+          referenceId: referral.id,
+          description: 'Welcome bonus — referred by a friend',
+        },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Referee wallet credit failed for ${referredUserId}: ${(err as Error).message}`,
+      );
+    }
+
+    this.logger.log(`Referral recorded: ${referrer.id} → ${referredUserId}`);
   }
 
   // ─── Called after referred user completes first booking ─
@@ -114,11 +136,31 @@ export class ReferralsService {
     referral.rewarded_booking_id = bookingId;
     await this.referralRepo.save(referral);
 
-    // TODO: Issue wallet credit/promo to referrer (referral.referrer_reward)
-    // For now: logged for manual processing or future wallet feature
-    this.logger.log(
-      `Referral rewarded: referrer=${referral.referrer_user_id} gets ₹${referral.referrer_reward}`,
-    );
+    // Deliver the referrer's ₹100 as real wallet credit.
+    try {
+      await this.walletService.credit(
+        referral.referrer_user_id,
+        Number(referral.referrer_reward),
+        WalletTxnType.REFERRAL_REWARD,
+        {
+          referenceType: 'referral',
+          referenceId: referral.id,
+          description: 'Referral reward — your friend completed their first booking',
+        },
+      );
+      this.logger.log(
+        `Referral rewarded: referrer=${referral.referrer_user_id} credited ₹${referral.referrer_reward}`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Referrer wallet credit FAILED for ${referral.referrer_user_id}: ${(err as Error).message}`,
+      );
+      // Roll the referral back to PENDING so a retry (next completed booking
+      // sweep or manual) can re-attempt — never silently lose the reward.
+      referral.status = ReferralStatus.PENDING;
+      referral.rewarded_booking_id = null;
+      await this.referralRepo.save(referral);
+    }
   }
 
   // ─── Get referee discount amount ─────────────────────

@@ -13,6 +13,7 @@ import { Payment } from '../payments/payment.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AvailabilityModule } from '../availability/availability.module';
 import { PromoCodesModule } from '../promo-codes/promo-codes.module';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 // ⚠️  VERIFY these import paths match your P1.5a entity files.
 import { MealPackage } from '../meal-packages/meal-package.entity';
@@ -42,6 +43,8 @@ import { PackageAddon } from '../meal-packages/package-addon.entity';
     // calls PromoCodesService.validate() during createBooking and
     // recordUsage() after the booking row saves.
     PromoCodesModule,
+    // Referral rewards on booking completion (credits referrer's wallet).
+    ReferralsModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService, ReceiptService],

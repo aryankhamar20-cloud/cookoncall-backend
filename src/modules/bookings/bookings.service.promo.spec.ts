@@ -73,6 +73,7 @@ function makeService(): {
     noop, // availabilityService
     promoCodesService as AnyAccess as PromoCodesService,
     noop, // dataSource
+    noop, // referralsService — not exercised by the promo-gateway helper
   );
 
   const callHelper = (

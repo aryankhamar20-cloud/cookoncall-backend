@@ -182,6 +182,8 @@ function makeService(opts: {
     noop, // availabilityService
     noop, // promoCodesService
     dataSource, // dataSource
+    // referralsService — onFirstBookingCompleted is called on completion.
+    { onFirstBookingCompleted: async () => undefined } as any,
   );
 
   return { service, bookingRow, cookRow, saved, notify };
