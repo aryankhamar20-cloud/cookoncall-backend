@@ -16,6 +16,12 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
+  // Behind Cloudflare + Railway there is exactly one proxy hop. Trusting it
+  // makes req.ip resolve to the REAL client IP (from X-Forwarded-For) so the
+  // per-IP rate limiter and request logs work on the actual caller, not the
+  // proxy. Without this, throttling is effectively bypassed.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   // Security
   app.use(helmet({
     // Relax CSP for Swagger UI
