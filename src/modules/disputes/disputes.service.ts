@@ -87,13 +87,17 @@ export class DisputesService {
     id: string,
     adminId: string,
     dto: {
-      status: DisputeStatus.RESOLVED | DisputeStatus.REJECTED | DisputeStatus.UNDER_REVIEW;
+      status: DisputeStatus;
       resolution_note?: string;
       refund_amount?: number;
     },
   ): Promise<Dispute> {
     const dispute = await this.disputeRepo.findOne({ where: { id } });
     if (!dispute) throw new NotFoundException('Dispute not found');
+    // Guard: admins move disputes forward, never back to 'open'.
+    if (dto.status === DisputeStatus.OPEN) {
+      throw new BadRequestException('Use under_review, resolved, or rejected');
+    }
 
     dispute.status = dto.status;
     if (dto.resolution_note !== undefined) dispute.resolution_note = dto.resolution_note;
