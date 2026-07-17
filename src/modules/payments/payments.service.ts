@@ -13,6 +13,8 @@ import { Payment, PaymentStatus } from './payment.entity';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
 import { CreateOrderDto, VerifyPaymentDto } from './dto/payment.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { WalletService } from '../wallet/wallet.service';
+import { WalletTxnType } from '../wallet/wallet-transaction.entity';
 
 @Injectable()
 export class PaymentsService {
@@ -26,6 +28,7 @@ export class PaymentsService {
     private bookingsRepository: Repository<Booking>,
     private configService: ConfigService,
     private notificationsService: NotificationsService,
+    private readonly walletService: WalletService,
   ) {
     this.razorpay = new Razorpay({
       key_id: this.configService.get<string>('RAZORPAY_KEY_ID'),
@@ -144,6 +147,108 @@ export class PaymentsService {
       currency: 'INR',
       booking_id: booking.id,
     };
+  }
+
+  // ─── PAY FROM WALLET ──────────────────────────────────
+  // Pays a booking entirely from the customer's wallet balance. In the
+  // current flow the booking is already CONFIRMED, so this just records a
+  // CAPTURED, wallet-funded payment (the chef payout is still recorded on
+  // it). WalletService.debit is atomic and rejects an overspend. If the
+  // payment write fails after the debit, we credit the wallet back so the
+  // customer is never charged for a booking that didn't get paid.
+  async payFromWallet(userId: string, bookingId: string) {
+    const booking = await this.bookingsRepository.findOne({
+      where: { id: bookingId, user_id: userId },
+      relations: ['user', 'cook', 'cook.user'],
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    const payableStatuses = [
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+      BookingStatus.AWAITING_PAYMENT,
+      BookingStatus.PENDING,
+    ];
+    if (!payableStatuses.includes(booking.status)) {
+      throw new BadRequestException(
+        `This booking cannot be paid right now (status: ${booking.status})`,
+      );
+    }
+
+    const existing = await this.paymentsRepository.findOne({
+      where: { booking_id: bookingId },
+    });
+    if (existing && existing.status === PaymentStatus.CAPTURED) {
+      throw new BadRequestException('Payment already completed');
+    }
+
+    const amount = Number(booking.total_price);
+    if (!amount || amount <= 0 || Number.isNaN(amount)) {
+      throw new BadRequestException('Invalid booking amount — please contact support');
+    }
+
+    // Debit the wallet — throws BadRequest if the balance is insufficient.
+    await this.walletService.debit(userId, amount, WalletTxnType.BOOKING_PAYMENT, {
+      referenceType: 'booking',
+      referenceId: bookingId,
+      description: `Booking ${bookingId.slice(0, 8).toUpperCase()} paid from wallet`,
+    });
+
+    const cookPayout = Number(booking.subtotal) - Number(booking.platform_fee);
+    try {
+      let payment: Payment;
+      if (existing) {
+        existing.amount = amount;
+        existing.platform_fee = booking.platform_fee;
+        existing.cook_payout = cookPayout;
+        existing.status = PaymentStatus.CAPTURED;
+        existing.paid_at = new Date();
+        payment = await this.paymentsRepository.save(existing);
+      } else {
+        payment = await this.paymentsRepository.save(
+          this.paymentsRepository.create({
+            booking_id: bookingId,
+            amount,
+            platform_fee: booking.platform_fee,
+            cook_payout: cookPayout,
+            status: PaymentStatus.CAPTURED,
+            paid_at: new Date(),
+          }),
+        );
+      }
+
+      // Legacy rows: flip AWAITING_PAYMENT / PENDING → CONFIRMED.
+      if (
+        booking.status === BookingStatus.AWAITING_PAYMENT ||
+        booking.status === BookingStatus.PENDING
+      ) {
+        booking.status = BookingStatus.CONFIRMED;
+        booking.confirmed_at = new Date();
+        await this.bookingsRepository.save(booking);
+      }
+
+      return {
+        success: true,
+        payment_id: payment.id,
+        booking_id: bookingId,
+        method: 'wallet',
+      };
+    } catch (err) {
+      // Payment write failed after debiting — refund the wallet so the
+      // customer is never charged for an unpaid booking.
+      await this.walletService
+        .credit(userId, amount, WalletTxnType.REFUND_CREDIT, {
+          referenceType: 'booking',
+          referenceId: bookingId,
+          description: 'Reversed a wallet payment that could not be completed',
+        })
+        .catch(() => undefined);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Wallet payment failed for booking ${bookingId}: ${msg}`);
+      throw new BadRequestException(
+        'Could not complete the wallet payment. Your balance was not charged.',
+      );
+    }
   }
 
   // ─── VERIFY PAYMENT ───────────────────────────────────

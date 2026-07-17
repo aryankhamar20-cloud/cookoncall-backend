@@ -62,7 +62,10 @@ function makeService(opts: { secret?: string | null } = {}) {
     }),
   };
 
-  return new PaymentsService(noopRepo, noopRepo, cfg, noopNotif);
+  // WalletService — only exercised by payFromWallet, not these specs.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const noopWallet = { debit: jest.fn(), credit: jest.fn(), getBalance: jest.fn() } as any;
+  return new PaymentsService(noopRepo, noopRepo, cfg, noopNotif, noopWallet);
 }
 
 describe('PaymentsService.handleWebhook (HMAC verification)', () => {

@@ -12,11 +12,17 @@ import {
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { IsUUID } from 'class-validator';
 import { PaymentsService } from './payments.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { User } from '../users/user.entity';
 import { CreateOrderDto, VerifyPaymentDto } from './dto/payment.dto';
+
+class WalletPayDto {
+  @IsUUID()
+  booking_id: string;
+}
 
 @Controller('payments')
 export class PaymentsController {
@@ -38,6 +44,17 @@ export class PaymentsController {
     @Body() dto: VerifyPaymentDto,
   ) {
     const result = await this.paymentsService.verifyPayment(user.id, dto);
+    return { success: true, data: result };
+  }
+
+  // Pay a booking entirely from wallet balance (no Razorpay).
+  @Post('wallet')
+  @HttpCode(HttpStatus.OK)
+  async payFromWallet(
+    @CurrentUser() user: User,
+    @Body() dto: WalletPayDto,
+  ) {
+    const result = await this.paymentsService.payFromWallet(user.id, dto.booking_id);
     return { success: true, data: result };
   }
 
