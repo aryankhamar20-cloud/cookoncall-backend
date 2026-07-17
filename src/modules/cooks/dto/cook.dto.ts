@@ -201,6 +201,16 @@ export class CreateMenuItemDto {
   @IsOptional()
   @IsString()
   image?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  dietary_tags?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  allergens?: string[];
 }
 
 export class UpdateMenuItemDto {
@@ -233,6 +243,16 @@ export class UpdateMenuItemDto {
   @IsOptional()
   @IsBoolean()
   is_available?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  dietary_tags?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  allergens?: string[];
 }
 
 export class SearchCooksDto {

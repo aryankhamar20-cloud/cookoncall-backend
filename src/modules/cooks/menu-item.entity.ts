@@ -56,6 +56,17 @@ export class MenuItem {
   @Column({ default: true })
   is_available: boolean;
 
+  /**
+   * Dietary tags, e.g. ['vegan','jain','halal','no_onion_garlic','gluten_free'].
+   * Free-form strings validated on the client; stored as jsonb for filtering.
+   */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  dietary_tags: string[];
+
+  /** Allergens present, e.g. ['nuts','dairy','gluten','egg','soy','shellfish']. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  allergens: string[];
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }
