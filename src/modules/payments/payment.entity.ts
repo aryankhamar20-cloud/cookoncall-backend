@@ -1,11 +1,12 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
-  OneToOne,
+  Entity,
+  Index,
   JoinColumn,
+  OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { Booking } from '../bookings/booking.entity';
 
@@ -17,6 +18,8 @@ export enum PaymentStatus {
   FAILED = 'failed',
 }
 
+@Index('idx_payments_booking_id', ['booking_id'])
+@Index('idx_payments_rzp_order', ['razorpay_order_id'])
 @Entity('payments')
 export class Payment {
   @PrimaryGeneratedColumn('uuid')

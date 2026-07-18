@@ -1,12 +1,13 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
-  OneToOne,
+  Entity,
+  Index,
   JoinColumn,
   OneToMany,
+  OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../users/user.entity';
 
@@ -28,6 +29,7 @@ export enum ServiceRole {
   BOTH = 'both',
 }
 
+@Index('idx_cooks_user_id', ['user_id'])
 @Entity('cooks')
 export class Cook {
   @PrimaryGeneratedColumn('uuid')

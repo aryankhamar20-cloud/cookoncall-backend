@@ -12,6 +12,7 @@ import { User } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
 import { Booking } from '../bookings/booking.entity';
 
+@Index('idx_reviews_cook_id', ['cook_id'])
 @Entity('reviews')
 // Apr 21, 2026: explicit unique index to enforce one review per booking
 // at the DB layer (in addition to the OneToOne above + service-layer check).

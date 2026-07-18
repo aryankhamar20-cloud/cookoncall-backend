@@ -1,12 +1,13 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
-  ManyToOne,
+  Entity,
+  Index,
   JoinColumn,
+  ManyToOne,
   OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../users/user.entity';
 import { Cook } from '../cooks/cook.entity';
@@ -30,6 +31,10 @@ export enum BookingType {
   FOOD_DELIVERY = 'food_delivery',
 }
 
+@Index('idx_bookings_user_created', ['user_id', 'created_at'])
+@Index('idx_bookings_cook_created', ['cook_id', 'created_at'])
+@Index('idx_bookings_status', ['status'])
+@Index('idx_bookings_scheduled_at', ['scheduled_at'])
 @Entity('bookings')
 export class Booking {
   @PrimaryGeneratedColumn('uuid')

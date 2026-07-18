@@ -1,11 +1,12 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
-  OneToOne,
+  Entity,
+  Index,
   OneToMany,
+  OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
@@ -15,6 +16,7 @@ export enum UserRole {
   ADMIN = 'admin',
 }
 
+@Index('idx_users_google_id', ['google_id'])
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')

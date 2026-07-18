@@ -31,6 +31,7 @@ export enum NotificationType {
   GENERAL = 'general',
 }
 
+@Index('idx_notifications_user_created', ['user_id', 'created_at'])
 @Entity('notifications')
 export class Notification {
   @PrimaryGeneratedColumn('uuid')
