@@ -98,6 +98,9 @@ function makeService(opts: {
     parseInbound: jest.fn(),
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fcm: any = { sendToToken: jest.fn(), sendToMultiple: jest.fn() };
+
   const service = new NotificationsService(
     notificationsRepo,
     usersRepo,
@@ -106,6 +109,9 @@ function makeService(opts: {
     config,
     analytics,
     whatsapp,
+    // FcmService — push fan-out. Stubbed: these specs assert on the
+    // in-app / email / WhatsApp branches, not on push delivery.
+    fcm,
   );
 
   // Spy on sendDirectEmail rather than letting it actually call fetch.

@@ -8,6 +8,7 @@ import { Notification, NotificationType } from './notification.entity';
 import { User } from '../users/user.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { FcmService } from '../../common/services/fcm.service';
 import {
   CHEF_BOOKING_CONFIRMED,
   CHEF_BOOKING_REQUEST,
@@ -36,6 +37,10 @@ export class NotificationsService {
     // WHATSAPP_* env is unset, so this dep is safe in dev / preview /
     // CI without WABA credentials.
     private readonly whatsapp: WhatsAppService,
+    // Push (FCM HTTP v1). Provided by the @Global CommonModule, so no
+    // module import is required here. Every in-app notification also
+    // fans out to the user's device via _sendPush below.
+    private readonly fcm: FcmService,
   ) {
     this.brevoApiKey = this.configService.get<string>('BREVO_API_KEY', '');
   }
@@ -98,6 +103,40 @@ export class NotificationsService {
    * duplicate. This protects every notification source — Bull retry,
    * webhook re-delivery, cron re-run — from spamming the user.
    */
+  /**
+   * Mirror an in-app notification to the user's phone as a push.
+   *
+   * Fire-and-forget and fully defensive: honours the user's
+   * `push_enabled` preference, no-ops when there's no device token, and
+   * never throws — a push failure must never break a booking flow.
+   */
+  private async _sendPush(
+    userId: string,
+    title: string,
+    body: string,
+    metadata?: Record<string, any>,
+  ): Promise<void> {
+    try {
+      if (!(await this._channelAllowed(userId, 'push'))) return;
+      const user = await this.usersRepository.findOne({
+        where: { id: userId },
+        select: ['id', 'fcm_token'],
+      });
+      const token = user?.fcm_token;
+      if (!token) return;
+
+      // FCM v1 requires all data values to be strings.
+      const data: Record<string, string> = {};
+      for (const [k, v] of Object.entries(metadata ?? {})) {
+        if (v !== undefined && v !== null) data[k] = String(v);
+      }
+      await this.fcm.sendToToken(token, title, body, data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Push notification failed for user ${userId}: ${msg}`);
+    }
+  }
+
   async create(
     userId: string,
     type: NotificationType,
@@ -125,7 +164,11 @@ export class NotificationsService {
     });
 
     try {
-      return await this.notificationsRepository.save(notification);
+      const saved = await this.notificationsRepository.save(notification);
+      // Fan out to the device. Deliberately not awaited: push latency
+      // must not slow the booking request that triggered it.
+      void this._sendPush(userId, title, message, metadata);
+      return saved;
     } catch (err: any) {
       // Race condition: a concurrent create() with the same idempotency
       // key won the insert. Re-fetch and return that row instead of

@@ -63,6 +63,9 @@ function makeService(usersFindOne: jest.Mock) {
     parseInbound: jest.fn(),
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fcm: any = { sendToToken: jest.fn(), sendToMultiple: jest.fn() };
+
   return new NotificationsService(
     notificationsRepo,
     usersRepo,
@@ -71,6 +74,9 @@ function makeService(usersFindOne: jest.Mock) {
     config,
     analytics,
     whatsapp,
+    // FcmService — push fan-out. Stubbed: these specs assert on the
+    // in-app / email / WhatsApp branches, not on push delivery.
+    fcm,
   );
 }
 
