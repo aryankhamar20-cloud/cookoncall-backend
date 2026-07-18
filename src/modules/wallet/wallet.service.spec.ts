@@ -37,7 +37,7 @@ function makeService() {
   } as any;
   const dataSource = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    transaction: async (cb: any) => cb({ getRepository: () => managerRepo }),
+    transaction: async (cb: any) => cb({ getRepository: () => managerRepo, query: async () => [] }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   return { service: new WalletService(repo, dataSource), ledger };

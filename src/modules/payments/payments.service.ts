@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { Payment, PaymentStatus } from './payment.entity';
@@ -29,6 +29,7 @@ export class PaymentsService {
     private configService: ConfigService,
     private notificationsService: NotificationsService,
     private readonly walletService: WalletService,
+    private readonly dataSource: DataSource,
   ) {
     this.razorpay = new Razorpay({
       key_id: this.configService.get<string>('RAZORPAY_KEY_ID'),
@@ -175,74 +176,98 @@ export class PaymentsService {
       );
     }
 
-    const existing = await this.paymentsRepository.findOne({
-      where: { booking_id: bookingId },
-    });
-    if (existing && existing.status === PaymentStatus.CAPTURED) {
-      throw new BadRequestException('Payment already completed');
-    }
-
     const amount = Number(booking.total_price);
     if (!amount || amount <= 0 || Number.isNaN(amount)) {
       throw new BadRequestException('Invalid booking amount — please contact support');
     }
-
-    // Debit the wallet — throws BadRequest if the balance is insufficient.
-    await this.walletService.debit(userId, amount, WalletTxnType.BOOKING_PAYMENT, {
-      referenceType: 'booking',
-      referenceId: bookingId,
-      description: `Booking ${bookingId.slice(0, 8).toUpperCase()} paid from wallet`,
-    });
-
     const cookPayout = Number(booking.subtotal) - Number(booking.platform_fee);
-    try {
-      let payment: Payment;
-      if (existing) {
-        existing.amount = amount;
-        existing.platform_fee = booking.platform_fee;
-        existing.cook_payout = cookPayout;
-        existing.status = PaymentStatus.CAPTURED;
-        existing.paid_at = new Date();
-        payment = await this.paymentsRepository.save(existing);
-      } else {
-        payment = await this.paymentsRepository.save(
-          this.paymentsRepository.create({
-            booking_id: bookingId,
-            amount,
-            platform_fee: booking.platform_fee,
-            cook_payout: cookPayout,
-            status: PaymentStatus.CAPTURED,
-            paid_at: new Date(),
-          }),
-        );
-      }
 
-      // Legacy rows: flip AWAITING_PAYMENT / PENDING → CONFIRMED.
-      if (
-        booking.status === BookingStatus.AWAITING_PAYMENT ||
-        booking.status === BookingStatus.PENDING
-      ) {
-        booking.status = BookingStatus.CONFIRMED;
-        booking.confirmed_at = new Date();
-        await this.bookingsRepository.save(booking);
-      }
+    // Everything below runs in ONE transaction, serialized by a
+    // per-booking advisory lock. Two concurrent pay-from-wallet requests
+    // for the same booking (double-tap, retry storm) can't both charge:
+    // the first commits a CAPTURED payment; the second re-reads it under
+    // the lock, sees CAPTURED and aborts before debiting. Because the
+    // wallet debit and the payment write share the transaction, a failed
+    // payment write rolls the debit back automatically — no compensating
+    // credit is ever required.
+    try {
+      const result = await this.dataSource.transaction(async (mgr) => {
+        await mgr.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `pay:${bookingId}`,
+        ]);
+
+        const paymentRepo = mgr.getRepository(Payment);
+        const existing = await paymentRepo.findOne({
+          where: { booking_id: bookingId },
+        });
+        if (existing && existing.status === PaymentStatus.CAPTURED) {
+          throw new BadRequestException('Payment already completed');
+        }
+
+        // Debit the wallet in the SAME transaction. Throws BadRequest on
+        // insufficient balance, which rolls the whole thing back.
+        await this.walletService.debitWithManager(
+          mgr,
+          userId,
+          amount,
+          WalletTxnType.BOOKING_PAYMENT,
+          {
+            referenceType: 'booking',
+            referenceId: bookingId,
+            description: `Booking ${bookingId.slice(0, 8).toUpperCase()} paid from wallet`,
+          },
+        );
+
+        let payment: Payment;
+        if (existing) {
+          existing.amount = amount;
+          existing.platform_fee = booking.platform_fee;
+          existing.cook_payout = cookPayout;
+          existing.status = PaymentStatus.CAPTURED;
+          existing.paid_at = new Date();
+          payment = await paymentRepo.save(existing);
+        } else {
+          payment = await paymentRepo.save(
+            paymentRepo.create({
+              booking_id: bookingId,
+              amount,
+              platform_fee: booking.platform_fee,
+              cook_payout: cookPayout,
+              status: PaymentStatus.CAPTURED,
+              paid_at: new Date(),
+            }),
+          );
+        }
+
+        // Legacy rows: flip AWAITING_PAYMENT / PENDING → CONFIRMED.
+        if (
+          booking.status === BookingStatus.AWAITING_PAYMENT ||
+          booking.status === BookingStatus.PENDING
+        ) {
+          await mgr.getRepository(Booking).update(booking.id, {
+            status: BookingStatus.CONFIRMED,
+            confirmed_at: new Date(),
+          });
+        }
+
+        return { payment_id: payment.id };
+      });
 
       return {
         success: true,
-        payment_id: payment.id,
+        payment_id: result.payment_id,
         booking_id: bookingId,
         method: 'wallet',
       };
     } catch (err) {
-      // Payment write failed after debiting — refund the wallet so the
-      // customer is never charged for an unpaid booking.
-      await this.walletService
-        .credit(userId, amount, WalletTxnType.REFUND_CREDIT, {
-          referenceType: 'booking',
-          referenceId: bookingId,
-          description: 'Reversed a wallet payment that could not be completed',
-        })
-        .catch(() => undefined);
+      // Preserve the meaningful 4xx messages (insufficient balance,
+      // already paid, bad amount); wrap anything unexpected generically.
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Wallet payment failed for booking ${bookingId}: ${msg}`);
       throw new BadRequestException(

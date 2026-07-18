@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Patch } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UpdateNotificationPreferencesDto } from './dto/notification-preferences.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -57,5 +58,16 @@ export class UsersController {
     @Body() dto: UpdateNotificationPreferencesDto,
   ) {
     return this.usersService.updateNotificationPreferences(user.id, dto);
+  }
+
+  // ─── SELF-SERVICE ACCOUNT DELETION ──────────────────────
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete (deactivate + anonymise) the current account' })
+  async deleteAccount(
+    @CurrentUser() user: User,
+    @Body() dto: DeleteAccountDto,
+  ) {
+    return this.usersService.deleteAccount(user.id, dto);
   }
 }

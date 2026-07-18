@@ -1,12 +1,31 @@
 import {
+  BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import * as bcrypt from 'bcrypt';
 import { User } from './user.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Booking, BookingStatus } from '../bookings/booking.entity';
+
+/**
+ * Booking states in which money or a commitment is still "in flight",
+ * so the customer must not be allowed to delete their account until
+ * they resolve them (finish, cancel, or wait for expiry). Deleting
+ * mid-booking would orphan a chef who's about to cook or a payment
+ * that's mid-capture.
+ */
+const LIVE_BOOKING_STATUSES: BookingStatus[] = [
+  BookingStatus.PENDING_CHEF_APPROVAL,
+  BookingStatus.AWAITING_PAYMENT,
+  BookingStatus.PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.IN_PROGRESS,
+];
 
 @Injectable()
 export class UsersService {
@@ -96,6 +115,80 @@ export class UsersService {
     });
     if (!user) return null;
     return user;
+  }
+
+  /**
+   * Self-service account deletion (soft delete + PII scrub).
+   *
+   * Security:
+   *   - Password accounts must supply the correct current password.
+   *   - Google-only accounts (no password on file) must pass confirm=true.
+   *   - Blocked while the user has any live booking (money/commitment
+   *     still in flight) — they must resolve those first.
+   *
+   * We DON'T hard-delete the row: bookings, payments and payouts are
+   * financial records we retain. Instead we deactivate the account and
+   * anonymise every personal field so no PII survives. The email is
+   * rewritten to a unique tombstone value so the UNIQUE constraint
+   * still holds and the freed-up real email can be reused for a fresh
+   * signup later.
+   */
+  async deleteAccount(
+    userId: string,
+    opts: { current_password?: string; confirm?: boolean },
+  ): Promise<{ message: string }> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.password) {
+      if (!opts.current_password) {
+        throw new BadRequestException(
+          'Please enter your current password to delete your account.',
+        );
+      }
+      const isMatch = await bcrypt.compare(opts.current_password, user.password);
+      if (!isMatch) {
+        throw new UnauthorizedException('Incorrect password.');
+      }
+    } else if (opts.confirm !== true) {
+      // Google-only account: no password to verify, so require an
+      // explicit confirmation flag instead.
+      throw new BadRequestException(
+        'Please confirm that you want to delete your account.',
+      );
+    }
+
+    const liveBookings = await this.bookingsRepository.count({
+      where: { user_id: userId, status: In(LIVE_BOOKING_STATUSES) },
+    });
+    if (liveBookings > 0) {
+      throw new ForbiddenException(
+        'You have active bookings. Please complete or cancel them before deleting your account.',
+      );
+    }
+
+    // Soft delete + anonymise. The tombstone email keeps the UNIQUE
+    // index satisfied while releasing the user's real address.
+    await this.usersRepository.update(userId, {
+      is_active: false,
+      name: 'Deleted User',
+      email: `deleted+${userId}@deleted.cookoncall.com`,
+      phone: null,
+      phone_verified: false,
+      email_verified: false,
+      password: null,
+      avatar: null,
+      google_id: null,
+      address: null,
+      latitude: null,
+      longitude: null,
+      refresh_token: null,
+      otp: null,
+      otp_expires_at: null,
+      fcm_token: null,
+    });
+
+    return { message: 'Your account has been deleted.' };
   }
 
   async getUserStats(userId: string) {
